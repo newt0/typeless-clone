@@ -18,7 +18,13 @@ private actor FakeWebSocketChannel: WebSocketChannel {
     func send(binary: Data) async throws { sentBinary.append(binary) }
 
     func receive() async throws -> WSMessage {
-        if incoming.isEmpty { throw STTError.connection } // reached only if a script omits EndOfTranscript
+        // Emulate a live socket: block awaiting more frames once the script is
+        // drained (scripts that terminate the stream end with EndOfTranscript/
+        // Error, so the receive loop returns before reaching this).
+        if incoming.isEmpty {
+            try? await Task.sleep(for: .seconds(3600))
+            throw STTError.connection
+        }
         return incoming.removeFirst()
     }
 
@@ -39,6 +45,11 @@ private func serverMsg(_ message: String, transcript: String? = nil, type: Strin
 
 private func client(_ fake: FakeWebSocketChannel) -> SpeechmaticsClient {
     SpeechmaticsClient(apiKey: "test-key", connect: { _, _ in fake })
+}
+
+private actor Counter {
+    private(set) var count = 0
+    func bump() { count += 1 }
 }
 
 // MARK: - Deterministic unit tests (no network)
@@ -84,7 +95,9 @@ struct SpeechmaticsClientWireTests {
 
     @Test("endUtterance sends EndOfStream with last_seq_no = chunks sent")
     func endOfStreamSeqNo() async throws {
-        let fake = FakeWebSocketChannel(script: [serverMsg("EndOfTranscript")])
+        // Empty script → the receive loop blocks, keeping the session live while
+        // we exercise send/endUtterance framing.
+        let fake = FakeWebSocketChannel(script: [])
         let c = client(fake)
         try await c.prewarm()
         _ = try await c.beginUtterance(vocab: [])
@@ -155,6 +168,43 @@ struct SpeechmaticsClientStreamTests {
         var events: [STTEvent] = []
         for await e in stream { events.append(e) }
         #expect(events == [.error(.server(type: "not_authorised"))])
+    }
+}
+
+@Suite("SpeechmaticsClient connection lifecycle")
+struct SpeechmaticsClientLifecycleTests {
+
+    @Test("a dropped/errored session lets the next utterance reconnect")
+    func reconnectsAfterDrop() async throws {
+        let connects = Counter()
+        let c = SpeechmaticsClient(apiKey: "k", connect: { _, _ in
+            await connects.bump()
+            return FakeWebSocketChannel(script: [serverMsg("Error", type: "temporary")])
+        })
+        try await c.prewarm()
+
+        let s1 = try await c.beginUtterance(vocab: [])
+        for await _ in s1 {} // drain to the server Error → session torn down, socket dropped
+
+        let s2 = try await c.beginUtterance(vocab: [])
+        for await _ in s2 {}
+
+        // Reconnected each time rather than no-op'ing on a dead channel (the
+        // STTClient reconnect contract).
+        #expect(await connects.count == 2)
+    }
+
+    @Test("concurrent prewarm opens only one socket")
+    func prewarmReentrancy() async throws {
+        let connects = Counter()
+        let c = SpeechmaticsClient(apiKey: "k", connect: { _, _ in
+            await connects.bump()
+            return FakeWebSocketChannel(script: [])
+        })
+        async let a: Void = c.prewarm()
+        async let b: Void = c.prewarm()
+        _ = try await (a, b)
+        #expect(await connects.count == 1)
     }
 }
 
