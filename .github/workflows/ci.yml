@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Build & test (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show toolchain
+        run: swift --version
+      - name: Build
+        run: swift build
+      - name: Test
+        run: ./scripts/test.sh
+
+  invariants:
+    name: Invariant guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Invariant 4 (docs/plan/00-overview.md): all logging goes through the Log
+      # wrapper so body text never reaches a log. Ban direct os_log/NSLog/print
+      # in Sources, except inside the Log wrapper itself.
+      - name: No direct logging outside the Log wrapper
+        run: |
+          hits=$(grep -rnE '\b(os_log|NSLog|print)\s*\(' Sources \
+                   --include='*.swift' | grep -v '/Log\.swift:' || true)
+          if [ -n "$hits" ]; then
+            echo "::error::direct logging found (use the Log wrapper):"
+            echo "$hits"; exit 1
+          fi
+      # Invariant 5: API keys live only in the Keychain, never UserDefaults.
+      - name: No API keys in UserDefaults
+        run: |
+          hits=$(grep -rniE 'UserDefaults.*(apikey|api_key|token|secret)' Sources \
+                   --include='*.swift' || true)
+          if [ -n "$hits" ]; then
+            echo "::error::possible API key written to UserDefaults:"
+            echo "$hits"; exit 1
+          fi

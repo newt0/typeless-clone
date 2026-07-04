@@ -4,7 +4,14 @@ Protocol: see `06-autonomous-workflow.md`. Statuses: `todo` / `in-progress` / `p
 
 ## Now
 
-Next up: **M0-T1** (project bootstrap) and **S1-T1** (insertion harness) — both unblocked. S2/S3 are blocked on owner-provided API keys.
+Branch `feat/m1-core-state-machine` holds: SwiftPM package (`KoeKit`/`KoeCore`), Constants, the `DictationSession` state machine (M1-T1) with 11 passing tests, `scripts/test.sh`, and CI. **Awaiting `gh auth` to push + open the first PR** (see blockers). Run tests locally with `./scripts/test.sh`.
+
+**Hard blockers (owner):**
+- **Install Xcode** (full, from the Mac App Store) — required for the `.app` target, entitlements, signing, and running/QA. Only Command Line Tools are present now.
+- **`gh auth login`** did not persist to Claude's shell — needed for push/PR/CI.
+- **Bundle ID** decision (permanent identifier) — needed to finish the Xcode-app part of M0-T1.
+
+Next unblocked (no Xcode needed): S3-T1 golden set, M6-T3 formatting logic, M5-T1 preflight decision logic (pure function part). Anything needing AppKit/AVFoundation/CGEvent runtime waits on Xcode.
 
 ## Phase 0 spikes (`01-phase0-spikes.md`)
 
@@ -22,10 +29,10 @@ Next up: **M0-T1** (project bootstrap) and **S1-T1** (insertion harness) — bot
 
 | Task | Status | Notes |
 | --- | --- | --- |
-| M0-T1 Xcode project + layout + CI | todo | CI workflow file created here |
-| M0-T2 status item, Log wrapper, Keychain | todo | |
-| M1-T1 DictationSession actor | todo | |
-| M1-T2 coordinator + FIFO insertion lock | todo | |
+| M0-T1 Xcode project + layout + CI | in-progress | SwiftPM pkg + Constants + CI done on branch; Xcode-app target + bundle ID blocked (Xcode install + owner) |
+| M0-T2 status item, Log wrapper, Keychain | blocked(Xcode) | AppKit/Keychain — needs the app target |
+| M1-T1 DictationSession actor | done(branch) | `feat/m1-core-state-machine`, 11 tests green; awaits push/PR |
+| M1-T2 coordinator + FIFO insertion lock | todo | Pure-logic; can proceed |
 | M2-T1 CGEventTap Fn hotkey | todo | |
 | M2-T2 tap liveness + alt hotkey | todo | |
 | M3-T1 audio engine + buffer | todo | |
@@ -61,7 +68,9 @@ Next up: **M0-T1** (project bootstrap) and **S1-T1** (insertion harness) — bot
 
 ## Owner-blocked items (see workflow doc §Owner's standing task list)
 
-- [ ] `gh auth login` (one-time)
+- [ ] **Install Xcode** (full) from the Mac App Store, then `sudo xcode-select -s /Applications/Xcode.app` — unblocks the app target and all runtime QA
+- [ ] `gh auth login` (did not reach Claude's shell last time — re-run and confirm `gh auth status` shows logged in)
+- [ ] Decide the permanent **bundle ID** (e.g. `dev.newt.Koe` or `com.<you>.koe`)
 - [ ] STT API keys: Speechmatics / Deepgram / Soniox
 - [ ] LLM API keys: Google AI (Gemini paid tier) / AWS Bedrock (Tokyo)
 - [ ] S2 utterance recordings (~100 clips; script list to be provided by Claude)
