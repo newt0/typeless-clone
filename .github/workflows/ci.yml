@@ -12,9 +12,14 @@ concurrency:
 jobs:
   build-test:
     name: Build & test (macOS)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: Select latest Xcode (Swift 6 for tools-version 6.0)
+        run: |
+          latest=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          echo "Using $latest"
+          sudo xcode-select -s "$latest/Contents/Developer"
       - name: Show toolchain
         run: swift --version
       - name: Build

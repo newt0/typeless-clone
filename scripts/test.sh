@@ -12,7 +12,9 @@ set -euo pipefail
 FW=/Library/Developer/CommandLineTools/Library/Developer/Frameworks
 LIBDIR=/Library/Developer/CommandLineTools/Library/Developer/usr/lib
 
-if [[ "$(xcode-select -p 2>/dev/null || true)" != *Xcode.app* ]] \
+# A Command-Line-Tools-only install reports a developer dir containing
+# "CommandLineTools"; a full Xcode reports a path inside an .app bundle.
+if [[ "$(xcode-select -p 2>/dev/null || true)" == *CommandLineTools* ]] \
    && [[ -d "$FW" ]] && [[ -f "$LIBDIR/lib_TestingInterop.dylib" ]]; then
   exec env DYLD_LIBRARY_PATH="$LIBDIR" swift test \
     -Xswiftc -F -Xswiftc "$FW" \
