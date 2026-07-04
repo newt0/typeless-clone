@@ -13,7 +13,7 @@ Bundle ID fixed: **`dev.newt.Koe`**. The app is a runnable menu-bar skeleton (PR
 
 **Running the app** (owner QA): `xcodegen generate` (once, or after `project.yml` changes) → open `Koe.xcodeproj` in Xcode → Run. Or `open` the built `Koe.app`. It shows a mic icon in the menu bar with History/Settings/Pause/Quit; no dictation yet. `Koe.xcodeproj` is git-ignored (regenerate from `project.yml`). Requires `brew install xcodegen`.
 
-Targets: **KoeCore** (pure) + **KoeStorage** (GRDB) + **KoeProviders** (API adapters). **Gemini + Speechmatics keys are in the Keychain and validated.** The formatting pipeline works end-to-end against real Gemini (filler removal / self-correction / punctuation verified live). Next toward the vertical slice: **M4 Speechmatics STT adapter** (WebSocket streaming), then wire hotkey+audio+STT+format+paste into the app (M2/M3/M5-T2 — need runtime + owner QA). Live tests: `KOE_LIVE_TESTS=1 ./scripts/test.sh`.
+Targets: **KoeCore** (pure) + **KoeStorage** (GRDB) + **KoeProviders** (API adapters). **Gemini + Speechmatics keys are in the Keychain and validated.** The formatting pipeline works end-to-end against real Gemini (filler removal / self-correction / punctuation verified live). **M4-T1/T2 done (branch `feat/m4-speechmatics-stt`):** streaming `STTClient` + `SpeechmaticsClient` (WebSocket RT, `EndOfStream` push-to-talk termination, `additional_vocab` injection, invariant-8 clean); 14 new tests, 86 total green. Next toward the vertical slice: wire hotkey+audio+STT+format+paste into the app (M2/M3/M5-T2 — need runtime + owner QA); M4-T3 unblocks after M3 audio buffer + M9 HUD. Live tests: `KOE_LIVE_TESTS=1 ./scripts/test.sh`; STT live also needs `KOE_STT_SAMPLE_WAV=<16kHz mono PCM16 wav>` (owner-supplied).
 
 ## Phase 0 spikes (`01-phase0-spikes.md`)
 
@@ -44,9 +44,9 @@ Targets: **KoeCore** (pure) + **KoeStorage** (GRDB) + **KoeProviders** (API adap
 
 | Task | Status | Notes |
 | --- | --- | --- |
-| M4-T1 STTClient protocol | todo | |
-| M4-T2 primary STT adapter | blocked(S2 decision) | |
-| M4-T3 batch resend + retry UI | todo | Depends M4-T2 |
+| M4-T1 STTClient protocol | done(branch) | `feat/m4-speechmatics-stt`; `STTClient`/`STTEvent`/`STTError` in KoeCore (streaming, prewarm/begin/send/end) |
+| M4-T2 primary STT adapter | done(branch) | 〃 +14 tests; `SpeechmaticsClient` (actor, URLSessionWebSocketTask via `WebSocketChannel` seam), `additional_vocab` (full-width kana, ≤1000), invariant-8 no smart-formatting. **`EndOfStream` not the design's fictional `ForceEndOfUtterance`** (decisions.md). Live test opt-in (owner WAV). S2 A/B still separate |
+| M4-T3 batch resend + retry UI | blocked(M3 audio buffer + M9 HUD) | Needs session-audio buffer (M3) + HUD retry button (M9), both todo |
 | M5-T1 preflight / ContextProvider | done(branch) | `feat/m5-t1-preflight`, +7 tests; pure decision (secure→block no-clipboard, app-changed→hold). AX/IsSecureEventInput reads are the M5-T2 runtime part |
 | M5-T2 paste simulation path 1 | todo | |
 | M5-T3 paths 2–3 + per-app overrides | todo | Milestone end → prompt owner: `/code-review ultra` |
