@@ -6,8 +6,6 @@ Each spike has a numeric Go gate (Design §12.1). Do not start Phase 1 milestone
 
 Results recording: append measured values to each spike section below and to the design doc (§6 appendix for S1). Update `[tune in Phase 0]` constants in the plan docs.
 
----
-
 ## S1 — Insertion matrix
 
 Validate paste-simulation insertion across target apps and fix the timing constants.
@@ -29,8 +27,6 @@ Validate paste-simulation insertion across target apps and fix the timing consta
 - No-Go branch: tune per-app delays, widen AppleScript path coverage, re-measure.
 - Design ref: §6.5, §12.1.
 
----
-
 ## S2 — STT A/B (Speechmatics vs Deepgram Nova-3 vs Soniox v5)
 
 ### S2-T1 Utterance set + streaming harness
@@ -47,8 +43,6 @@ Validate paste-simulation insertion across target apps and fix the timing consta
 - Output: pick primary + runner-up; record decision and data here.
 - Design ref: §4.1, §12.1 (S2), risk R4.
 
----
-
 ## S3 — LLM golden set (Gemini 2.5 Flash-Lite vs Claude Haiku 4.5)
 
 ### S3-T1 Golden set v1 (~150 cases)
@@ -64,8 +58,6 @@ Validate paste-simulation insertion across target apps and fix the timing consta
 - **Go gate**: one model passes — zero critical violations (intent alteration, over-formatting), judge pass ≥90%. Flash-Lite passing ⇒ it wins on latency/cost; otherwise Haiku.
 - Design ref: §4.2, §5.5, §12.1 (S3).
 
----
-
 ## S4 — E2E latency prototype
 
 ### S4-T1 Wire and measure
@@ -75,8 +67,6 @@ Validate paste-simulation insertion across target apps and fix the timing consta
 - **Go gate**: E2E P50 ≤2.0s (prototype relaxation; must show a credible path to 1.5s in production).
 - No-Go branch: switch provider region (Tokyo/APAC), consider speculative formatting (launch LLM on the last partial transcript at key-up), re-measure.
 - Design ref: §8, §12.1 (S4).
-
----
 
 ## Phase 0 exit checklist
 

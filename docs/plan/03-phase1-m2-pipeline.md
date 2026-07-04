@@ -2,8 +2,6 @@
 
 Prereq reading: `00-overview.md`. M4 requires the S2 provider decision; M6 prompt content builds on the S3 golden set. M5 is independent of providers and can start any time after M1.
 
----
-
 ## M4 — STTClient protocol + adapters
 
 ### M4-T1 Protocol + streaming session
@@ -29,8 +27,6 @@ Prereq reading: `00-overview.md`. M4 requires the S2 provider decision; M6 promp
 - Acceptance: fault-injection test (kill socket mid-utterance) → resend path recovers; double-fault → retry UI + history row + audio file present; file removed after successful retry.
 - Design ref: §10.2, §10.3.
 - Depends: M4-T2.
-
----
 
 ## M5 — TextInserter (paste simulation + fallback chain)
 
@@ -70,8 +66,6 @@ Sequence (constants `[tune in Phase 0]` from S1):
 - Acceptance: fault injection (block path 1) walks the chain and lands on path 3 with all three artifacts present; per-app override respected.
 - Design ref: §6.2, §10.2, §10.3.
 - Depends: M5-T2.
-
----
 
 ## M6 — Formatter + LLMClient
 
