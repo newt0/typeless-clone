@@ -11,11 +11,26 @@ private actor FakeWebSocketChannel: WebSocketChannel {
     private var incoming: [WSMessage]
     private var sentText: [String] = []
     private var sentBinary: [Data] = []
+    /// When true, `send(text:)` throws — emulates writing to a dead/idle-closed
+    /// socket (a raw transport error the adapter must normalize/self-heal).
+    private let failTextSend: Bool
+    /// When true, `send(binary:)` throws — emulates a mid-utterance socket drop.
+    private let failBinarySend: Bool
 
-    init(script: [WSMessage]) { incoming = script }
+    init(script: [WSMessage], failTextSend: Bool = false, failBinarySend: Bool = false) {
+        incoming = script
+        self.failTextSend = failTextSend
+        self.failBinarySend = failBinarySend
+    }
 
-    func send(text: String) async throws { sentText.append(text) }
-    func send(binary: Data) async throws { sentBinary.append(binary) }
+    func send(text: String) async throws {
+        if failTextSend { throw URLError(.networkConnectionLost) }
+        sentText.append(text)
+    }
+    func send(binary: Data) async throws {
+        if failBinarySend { throw URLError(.networkConnectionLost) }
+        sentBinary.append(binary)
+    }
 
     func receive() async throws -> WSMessage {
         // Emulate a live socket: block awaiting more frames once the script is
@@ -50,6 +65,22 @@ private func client(_ fake: FakeWebSocketChannel) -> SpeechmaticsClient {
 private actor Counter {
     private(set) var count = 0
     func bump() { count += 1 }
+    func bumpAndGet() -> Int { count += 1; return count }
+}
+
+/// A one-shot gate: `wait()` suspends until `openGate()` is called.
+private actor Gate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func openGate() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+    }
 }
 
 // MARK: - Deterministic unit tests (no network)
@@ -118,6 +149,46 @@ struct SpeechmaticsClientWireTests {
         await #expect(throws: STTError.notStarted) {
             try await c.send(audioChunk: Data([0]))
         }
+    }
+
+    @Test("send after prewarm but before beginUtterance throws notStarted")
+    func sendAfterPrewarmOnly() async throws {
+        let c = client(FakeWebSocketChannel(script: []))
+        try await c.prewarm() // channel is live but no session started
+        await #expect(throws: STTError.notStarted) { try await c.send(audioChunk: Data([0])) }
+    }
+
+    @Test("endUtterance after prewarm but before beginUtterance throws notStarted")
+    func endAfterPrewarmOnly() async throws {
+        let c = client(FakeWebSocketChannel(script: []))
+        try await c.prewarm()
+        await #expect(throws: STTError.notStarted) { try await c.endUtterance() }
+    }
+
+    @Test("send after endUtterance throws notStarted")
+    func sendAfterEnd() async throws {
+        let c = client(FakeWebSocketChannel(script: []))
+        try await c.prewarm()
+        _ = try await c.beginUtterance(vocab: [])
+        try await c.endUtterance()
+        await #expect(throws: STTError.notStarted) { try await c.send(audioChunk: Data([0])) }
+    }
+
+    @Test("endUtterance twice throws notStarted the second time")
+    func doubleEnd() async throws {
+        let c = client(FakeWebSocketChannel(script: []))
+        try await c.prewarm()
+        _ = try await c.beginUtterance(vocab: [])
+        try await c.endUtterance()
+        await #expect(throws: STTError.notStarted) { try await c.endUtterance() }
+    }
+
+    @Test("send normalizes a raw transport error to STTError")
+    func sendNormalizesError() async throws {
+        let c = client(FakeWebSocketChannel(script: [], failBinarySend: true))
+        try await c.prewarm()
+        _ = try await c.beginUtterance(vocab: [])
+        await #expect(throws: STTError.connection) { try await c.send(audioChunk: Data([0])) }
     }
 }
 
@@ -205,6 +276,35 @@ struct SpeechmaticsClientLifecycleTests {
         async let b: Void = c.prewarm()
         _ = try await (a, b)
         #expect(await connects.count == 1)
+    }
+
+    @Test("an idle-closed prewarmed socket self-heals on beginUtterance")
+    func selfHealsIdleClosedSocket() async throws {
+        let connects = Counter()
+        let c = SpeechmaticsClient(apiKey: "k", connect: { _, _ in
+            let n = await connects.bumpAndGet()
+            // Socket #1 (prewarmed) is dead — rejects StartRecognition; #2 is healthy.
+            return FakeWebSocketChannel(script: [serverMsg("EndOfTranscript")], failTextSend: n == 1)
+        })
+        try await c.prewarm()
+        let stream = try await c.beginUtterance(vocab: []) // send fails → reconnect → socket #2
+        for await _ in stream {}
+        #expect(await connects.count == 2)
+    }
+
+    @Test("a second beginUtterance while the first is in flight throws .busy")
+    func concurrentBeginBusy() async throws {
+        let gate = Gate()
+        let c = SpeechmaticsClient(apiKey: "k", connect: { _, _ in
+            await gate.wait() // hold the first begin suspended at connect
+            return FakeWebSocketChannel(script: [serverMsg("EndOfTranscript")])
+        })
+        async let first: AsyncStream<STTEvent> = c.beginUtterance(vocab: [])
+        try await Task.sleep(for: .milliseconds(50)) // let the first begin claim `beginning`
+        await #expect(throws: STTError.busy) { _ = try await c.beginUtterance(vocab: []) }
+        await gate.openGate()
+        let stream = try await first
+        for await _ in stream {}
     }
 }
 

@@ -25,8 +25,17 @@ public enum STTError: Error, Equatable, Sendable {
     case server(type: String)
     /// A server frame we could not parse into a known message.
     case malformedResponse
-    /// `send`/`endUtterance` called before a session was started.
+    /// `send`/`endUtterance` called before a session was started (or after it
+    /// ended).
     case notStarted
+    /// `beginUtterance` called while another begin is still in flight.
+    case busy
+
+    /// Normalize an arbitrary transport error into the STT taxonomy: pass an
+    /// existing ``STTError`` through, map anything else to ``connection``.
+    public static func from(_ error: Error) -> STTError {
+        (error as? STTError) ?? .connection
+    }
 }
 
 /// Streaming speech-to-text abstraction (Design §4.1). Adapters: Speechmatics
@@ -38,13 +47,17 @@ public enum STTError: Error, Equatable, Sendable {
 /// key-up. Connection reuse/reconnect is the adapter's concern and stays off
 /// this protocol — like ``LLMClient``, the P0 surface is intentionally minimal.
 public protocol STTClient: Sendable {
-    /// Establish or verify the connection ahead of speech. Idempotent: a no-op
-    /// when a healthy connection already exists, a reconnect when idle-closed.
+    /// Establish the connection ahead of speech so the first utterance doesn't
+    /// pay TLS+WebSocket setup. Idempotent: a no-op when a connection already
+    /// exists. If that connection has since idle-closed, ``beginUtterance`` (not
+    /// prewarm) transparently reconnects, since only a live session detects the
+    /// drop.
     func prewarm() async throws
 
     /// Start one utterance and return its live event stream. The personal
     /// dictionary (``STTVocabTerm``) is injected at session start; the adapter
-    /// translates it to the provider's vocabulary-boost wire format.
+    /// translates it to the provider's vocabulary-boost wire format. If the
+    /// prewarmed socket has since closed, it reconnects once transparently.
     func beginUtterance(vocab: [STTVocabTerm]) async throws -> AsyncStream<STTEvent>
 
     /// Stream one audio chunk: 16kHz, mono, little-endian PCM16.

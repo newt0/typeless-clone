@@ -37,6 +37,9 @@ public enum KoeConstants {
 
     // MARK: Timeout ladder (Design §10.3) — [tune in Phase 0 / S4]
 
+    /// STT WebSocket connect + ping-verification budget; exceeding treats the
+    /// socket as unreachable (prewarm/beginUtterance fail rather than hang).
+    public static let sttConnectTimeout: Duration = .seconds(5)
     /// key-up → STT final; exceeding triggers a single batch resend.
     public static let sttFinalTimeout: Duration = .seconds(2)
     /// LLM time-to-first-token; exceeding triggers one retry then degradation.
