@@ -13,7 +13,7 @@ Bundle ID fixed: **`dev.newt.Koe`**. The app is a runnable menu-bar skeleton (PR
 
 **Running the app** (owner QA): `xcodegen generate` (once, or after `project.yml` changes) → open `Koe.xcodeproj` in Xcode → Run. Or `open` the built `Koe.app`. It shows a mic icon in the menu bar with History/Settings/Pause/Quit; no dictation yet. `Koe.xcodeproj` is git-ignored (regenerate from `project.yml`). Requires `brew install xcodegen`.
 
-Next unblocked pure logic: M5-T1 (insertion preflight decision). Then app-integration + provider work (M6-T1 LLM adapter, M4 STT adapter, S2/S3 harness runs) need owner API keys; M2/M3/M5-T2 need CGEvent/AVFoundation runtime wiring in the app target.
+Package now has two library targets: **KoeCore** (pure) + **KoeStorage** (GRDB); `Package.resolved` is committed. Next unblocked solo work: M8 (DictionaryStore/GRDB), M7-T2 (history UI in the app). Provider work (M4/M6-T1/S2/S3) needs owner API keys; M2/M3/M5-T2/M9 need CGEvent/AVFoundation/HUD runtime wiring.
 
 ## Phase 0 spikes (`01-phase0-spikes.md`)
 
@@ -58,7 +58,7 @@ Next unblocked pure logic: M5-T1 (insertion preflight decision). Then app-integr
 
 | Task | Status | Notes |
 | --- | --- | --- |
-| M7-T1 history schema + write-ahead | todo | Land early; M5/M6 reference HistoryWriting |
+| M7-T1 history schema + write-ahead | done(branch) | `feat/m7-t1-history-store`, +8 tests; GRDB in new KoeStorage target; write-ahead + FTS5 trigram + LIKE fallback for short JP queries + retention |
 | M7-T2 history UI | todo | |
 | M8-T1 dictionary store + dual feed | todo | |
 | M9-T1 HUD panel | todo | |
