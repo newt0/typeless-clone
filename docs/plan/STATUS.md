@@ -9,9 +9,11 @@ Environment resolved: **Xcode 26.6 installed, `gh` authenticated, autonomous PR 
 - **PR #1 (merged)**: SwiftPM package (`KoeKit`/`KoeCore`), Constants, `DictationSession` state machine (M1-T1), CI, scripts.
 - **M1-T2** (this branch): `InsertionSerializer` FIFO gate + `SessionCoordinator` + collaborator seams; 18 tests total green.
 
-Remaining owner input: **bundle ID** (permanent identifier) — needed before the Xcode `.app` target (M0-T2). Will ask when starting that task.
+Bundle ID fixed: **`dev.newt.Koe`**. The app is a runnable menu-bar skeleton (PR #3).
 
-Next: continue pure-logic tasks (M5-T1 preflight decision, M6-T3 formatting logic, S3-T1 golden set) which need no app target; tackle the app shell (bundle ID) and Phase 0 harnesses after.
+**Running the app** (owner QA): `xcodegen generate` (once, or after `project.yml` changes) → open `Koe.xcodeproj` in Xcode → Run. Or `open` the built `Koe.app`. It shows a mic icon in the menu bar with History/Settings/Pause/Quit; no dictation yet. `Koe.xcodeproj` is git-ignored (regenerate from `project.yml`). Requires `brew install xcodegen`.
+
+Next: M5-T1 (insertion preflight decision, pure logic) and M6-T2/T3 (prompt assembly + formatting validation/chunking); Phase 0 harnesses (S1 insertion matrix now buildable; S2/S3 need owner API keys).
 
 ## Phase 0 spikes (`01-phase0-spikes.md`)
 
@@ -29,10 +31,10 @@ Next: continue pure-logic tasks (M5-T1 preflight decision, M6-T3 formatting logi
 
 | Task | Status | Notes |
 | --- | --- | --- |
-| M0-T1 Xcode project + layout + CI | in-progress | SwiftPM pkg + Constants + CI done on branch; Xcode-app target + bundle ID blocked (Xcode install + owner) |
-| M0-T2 status item, Log wrapper, Keychain | blocked(Xcode) | AppKit/Keychain — needs the app target |
+| M0-T1 Xcode project + layout + CI | done | SwiftPM pkg + CI (PR #1); Xcode app target via XcodeGen, bundle ID `dev.newt.Koe` (PR #3) |
+| M0-T2 status item, Log wrapper, Keychain | done(branch) | `feat/m0-t2-app-shell`: NSStatusItem menu-bar app, Log (StaticString, invariant 4), SecretStore/Keychain; runnable |
 | M1-T1 DictationSession actor | done | merged PR #1, 11 tests |
-| M1-T2 coordinator + FIFO insertion lock | done(branch) | `feat/m1-t2-coordinator`, +7 tests; awaits PR |
+| M1-T2 coordinator + FIFO insertion lock | done | merged PR #2, +7 tests |
 | M2-T1 CGEventTap Fn hotkey | todo | |
 | M2-T2 tap liveness + alt hotkey | todo | |
 | M3-T1 audio engine + buffer | todo | |

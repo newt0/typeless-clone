@@ -22,10 +22,20 @@ jobs:
           sudo xcode-select -s "$latest/Contents/Developer"
       - name: Show toolchain
         run: swift --version
-      - name: Build
+      - name: Build (SwiftPM)
         run: swift build
       - name: Test
         run: ./scripts/test.sh
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate
+      - name: Build app target
+        run: |
+          xcodebuild build \
+            -project Koe.xcodeproj -scheme Koe \
+            -destination 'generic/platform=macOS' -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO
 
   invariants:
     name: Invariant guards
@@ -37,7 +47,7 @@ jobs:
       # in Sources, except inside the Log wrapper itself.
       - name: No direct logging outside the Log wrapper
         run: |
-          hits=$(grep -rnE '\b(os_log|NSLog|print)\s*\(' Sources \
+          hits=$(grep -rnE '\b(os_log|NSLog|print)\s*\(' Sources App \
                    --include='*.swift' | grep -v '/Log\.swift:' || true)
           if [ -n "$hits" ]; then
             echo "::error::direct logging found (use the Log wrapper):"
@@ -46,7 +56,7 @@ jobs:
       # Invariant 5: API keys live only in the Keychain, never UserDefaults.
       - name: No API keys in UserDefaults
         run: |
-          hits=$(grep -rniE 'UserDefaults.*(apikey|api_key|token|secret)' Sources \
+          hits=$(grep -rniE 'UserDefaults.*(apikey|api_key|token|secret)' Sources App \
                    --include='*.swift' || true)
           if [ -n "$hits" ]; then
             echo "::error::possible API key written to UserDefaults:"
