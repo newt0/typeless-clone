@@ -1,5 +1,11 @@
 # Decision log
 
+## 2026-07-04 (session 3 — M7-T1 history/GRDB)
+
+- **GRDB isolated in a new `KoeStorage` target** (KoeCore stays dependency-free). `Package.resolved` is now committed (removed from .gitignore) for reproducible dependency versions; GRDB pinned at 7.11.1.
+- **History FTS is a hybrid: FTS5 trigram (≥3 chars) + `LIKE` fallback (1–2 chars).** Trigram cannot index 1–2 character terms, but 2-char words are ubiquitous in Japanese (会議, 資料, 送付), so short queries would silently return nothing with FTS alone. The LIKE scan is fine at personal-history scale and always correct; FTS keeps longer queries fast as history grows. Honors the design's FTS5 choice while fixing the Japanese gap.
+- **Write-ahead in stages** (raw transcript → formatted → insert result) via `HistoryWriting`; a crash after any stage leaves the transcript recoverable (invariant 1). `app_bundle_id`/`prompt_version`/`latency` columns exist but are populated later when the coordinator is wired with ContextProvider.
+
 ## 2026-07-04 (session 3 — M6-T3 chunk/validate)
 
 - **M6-T3 split into pure logic now + async ladder later.** `TranscriptChunker` (sentence-boundary splitting, never mid-sentence — an oversized lone sentence stays one chunk) and `OutputValidator` (empty / >30% shrink / instruction-leakage → `degrade`) are pure and tested here. The retry/timeout orchestration lands with M6-T1 when a real `LLMClient` exists.
