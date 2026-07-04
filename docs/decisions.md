@@ -2,6 +2,13 @@
 
 Audit trail replacing human code review (see `docs/plan/06-autonomous-workflow.md`). One dated entry per non-obvious decision: what was decided, why, alternatives rejected. Newest first.
 
+## 2026-07-04 (session 3 — M0-T2 app shell)
+
+- **Bundle ID `dev.newt.Koe`** (owner decision, permanent). App Sandbox off; ad-hoc signing (`CODE_SIGN_IDENTITY "-"`) for local build/run; CI builds with `CODE_SIGNING_ALLOWED=NO`.
+- **XcodeGen for the app target.** `project.yml` is the source of truth; the generated `Koe.xcodeproj` is git-ignored and regenerated (`xcodegen generate`). CI installs xcodegen, generates, and `xcodebuild`s the app so app-target breakage is caught. Chosen over a hand-written pbxproj (unmaintainable) and Tuist (heavier).
+- **`Log` wrapper takes only `StaticString` + optional `Int`** — structurally impossible to pass body text into a log (invariant 4), stronger than a convention. CI greps ban direct `os_log`/`NSLog`/`print` outside `Log.swift` across both `Sources` and `App`.
+- **`SecretStore` protocol** with `KeychainSecretStore` (real, Security API) + `InMemorySecretStore` (tests/previews). Contract is unit-tested via the in-memory impl because the login keychain is not reliable on CI runners; the Keychain adapter is runtime-verified on the dev machine.
+
 ## 2026-07-04 (session 3 — M1-T2)
 
 - **Coordinator seams are stage-named, not client-named.** M1-T2's plan lists an `STTClient` seam, but M4-T1 defines the richer streaming `STTClient` protocol. To avoid two conflicting protocols, the coordinator's seam is `Transcribing` (audio → transcript); an M4 `STTClient` adapter will satisfy it. Same for the other stages (`AudioCapturing`, `Formatting`, `TextInserting`, `HistoryWriting`, `ContextProviding`).

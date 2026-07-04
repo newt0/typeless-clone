@@ -1,0 +1,49 @@
+# XcodeGen spec — source of truth for the Koe macOS app target.
+# The generated Koe.xcodeproj is git-ignored; regenerate with `xcodegen generate`.
+# The bulk of the logic lives in the KoeKit SwiftPM package (KoeCore); this
+# target is the thin AppKit/SwiftUI shell (Design §3; docs/decisions.md).
+name: Koe
+
+options:
+  bundleIdPrefix: dev.newt
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+packages:
+  KoeKit:
+    path: .
+
+targets:
+  Koe:
+    type: application
+    platform: macOS
+    sources:
+      - App
+    dependencies:
+      - package: KoeKit
+        product: KoeCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.newt.Koe
+        PRODUCT_NAME: Koe
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: YES
+        # Menu-bar agent: no Dock icon.
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Koe records your voice to transcribe and insert text at your cursor."
+        # App Sandbox intentionally OFF (system-wide input tool; Design §3).
+        # Ad-hoc signing so it builds/runs locally without a team; CI passes
+        # CODE_SIGNING_ALLOWED=NO.
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+
+schemes:
+  Koe:
+    build:
+      targets:
+        Koe: all
+    run:
+      config: Debug
