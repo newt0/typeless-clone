@@ -47,7 +47,7 @@ Next unblocked pure logic: M5-T1 (insertion preflight decision). Then app-integr
 | M4-T1 STTClient protocol | todo | |
 | M4-T2 primary STT adapter | blocked(S2 decision) | |
 | M4-T3 batch resend + retry UI | todo | Depends M4-T2 |
-| M5-T1 preflight / ContextProvider | todo | Provider-independent — can run parallel to S2–S4 |
+| M5-T1 preflight / ContextProvider | done(branch) | `feat/m5-t1-preflight`, +7 tests; pure decision (secure→block no-clipboard, app-changed→hold). AX/IsSecureEventInput reads are the M5-T2 runtime part |
 | M5-T2 paste simulation path 1 | todo | |
 | M5-T3 paths 2–3 + per-app overrides | todo | Milestone end → prompt owner: `/code-review ultra` |
 | M6-T1 LLMClient protocol + adapters | blocked(S3 decision) | Adapter needs provider choice + keys |
