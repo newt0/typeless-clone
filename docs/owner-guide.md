@@ -11,7 +11,8 @@ Claude Code が実装を自律で進めるなかで、**あなた（オーナー
 
 - **API キー**: 各 AI サービスを使うためのパスワードのような文字列。これがないと「実際に喋って入力する」機能が作れません。
 - **Keychain（キーチェーン）**: macOS が秘密情報を安全に保管する仕組み。API キーはここに入れます。
-- キーは**あなたの手元でコマンドを実行して直接 Keychain に入れます**（Claude にキー本体を見せない安全な方法）。
+- キーは**あなたの手元で直接 Keychain に入れます**（Claude にキー本体を見せない安全な方法）。
+- ⚠️ **キーを含むコマンドは「自分のターミナル.app」で実行してください。Claude Code のチャットに `!` を付けて実行しないでください** — チャット経由だと鍵の文字列が会話ログに残ります。もしチャットで実行してしまった鍵は、後で各サービスの管理画面から**再発行（ローテーション）**して入れ直すのが安全です。
 
 ---
 
@@ -29,20 +30,20 @@ Claude Code が実装を自律で進めるなかで、**あなた（オーナー
    - 「Create API key」時に **Google Cloud プロジェクト**を選ぶ/作る画面が出ます。そのプロジェクトで**課金（Billing）を有効化**してください（クレジットカード登録）。
    - 課金を有効化したプロジェクトに紐づくキーが「有償 tier ＝ 学習不使用」になります。
 4. 表示された **API キー文字列**（`AIza...` のような文字列）をコピー。
-5. ターミナルで、下のコマンドの `ここにキー` を貼り替えて実行します。このチャットに `!` を付けて打つとこのセッション内で実行できます:
+5. **自分のターミナル.app** を開き（Claude のチャットではなく）、下のコマンドの `ここにキー` を貼り替えて実行します:
 
    ```
-   ! security add-generic-password -s dev.newt.Koe -a geminiAPIKey -w 'ここにキー' -U
+   security add-generic-password -s dev.newt.Koe -a geminiAPIKey -w 'ここにキー' -U
    ```
 
 ### 1-B. Speechmatics（音声認識 STT・主選定）
 
 1. ブラウザで **https://portal.speechmatics.com** を開き、アカウント登録（無料トライアルあり）。
 2. ログイン後、ポータル内の「**API Keys**」でキーを新規発行し、文字列をコピー。
-3. ターミナルで実行:
+3. **自分のターミナル.app** で実行（チャットの `!` は使わない）:
 
    ```
-   ! security add-generic-password -s dev.newt.Koe -a speechmaticsAPIKey -w 'ここにキー' -U
+   security add-generic-password -s dev.newt.Koe -a speechmaticsAPIKey -w 'ここにキー' -U
    ```
 
 > 補足: Speechmatics は利用規約に「学習利用」の条項があり、公式ドキュメントの「保存しない」記述と表面上矛盾しています。**個人でのドッグフード段階では問題ありません**が、将来の外部配布（Phase 2）前に書面確認が必要、と設計書に記録済みです。
@@ -65,10 +66,10 @@ Claude Code が実装を自律で進めるなかで、**あなた（オーナー
 | Soniox | STT 低コスト候補 | https://console.soniox.com | `sonioxAPIKey` |
 | AWS Bedrock | LLM 次点（Claude Haiku・東京） | AWS アカウント | `awsAccessKeyID` と `awsSecretAccessKey`（2つ） |
 
-保存コマンドは 1-A と同じ形（`-a` を上表の名前に変える）:
+保存コマンドは 1-A と同じ形（自分のターミナルで、`-a` を上表の名前に変える）:
 
 ```
-! security add-generic-password -s dev.newt.Koe -a deepgramAPIKey -w 'ここにキー' -U
+security add-generic-password -s dev.newt.Koe -a deepgramAPIKey -w 'ここにキー' -U
 ```
 
 > **AWS Bedrock** はやや手間です（AWS アカウント作成 → Bedrock で Claude Haiku のモデルアクセスを **ap-northeast-1（東京）** で申請 → IAM ユーザーを作りアクセスキー2つを発行）。必要になったら Claude が個別に手順を出します。今は不要です。
