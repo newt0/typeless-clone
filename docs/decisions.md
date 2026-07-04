@@ -2,6 +2,12 @@
 
 Audit trail replacing human code review (see `docs/plan/06-autonomous-workflow.md`). One dated entry per non-obvious decision: what was decided, why, alternatives rejected. Newest first.
 
+## 2026-07-04 (session 3 — M1-T2)
+
+- **Coordinator seams are stage-named, not client-named.** M1-T2's plan lists an `STTClient` seam, but M4-T1 defines the richer streaming `STTClient` protocol. To avoid two conflicting protocols, the coordinator's seam is `Transcribing` (audio → transcript); an M4 `STTClient` adapter will satisfy it. Same for the other stages (`AudioCapturing`, `Formatting`, `TextInserting`, `HistoryWriting`, `ContextProviding`).
+- **`UtteranceContext { index }` threaded through every stage.** Gives stages a stable FIFO id for logging/metrics and makes overlap ordering deterministically testable (the id is fixed at reserve time, independent of concurrent scheduling).
+- **FIFO release is structural (exactly-once), not flag-guarded.** `run()` calls `serializer.complete` in exactly one place after the stages return (success or failure); `waitTurn` is idempotent for the served ticket. Avoids a mutable captured `var` that tripped Swift 6's `sending` data-race check.
+
 ## 2026-07-04 (session 2 — first code)
 
 - **Environment blockers found**: full Xcode is NOT installed (only Command Line Tools) → the macOS `.app` target, entitlements, signing, and running the app are blocked on an owner Xcode install. `gh` is not authenticated in Claude's shell (no `~/.config/gh`, env PAT returns 401) → push/PR are blocked. Swift 6.3 toolchain works, so pure-logic development proceeds.
