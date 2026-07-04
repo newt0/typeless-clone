@@ -13,7 +13,7 @@ Bundle ID fixed: **`dev.newt.Koe`**. The app is a runnable menu-bar skeleton (PR
 
 **Running the app** (owner QA): `xcodegen generate` (once, or after `project.yml` changes) → open `Koe.xcodeproj` in Xcode → Run. Or `open` the built `Koe.app`. It shows a mic icon in the menu bar with History/Settings/Pause/Quit; no dictation yet. `Koe.xcodeproj` is git-ignored (regenerate from `project.yml`). Requires `brew install xcodegen`.
 
-Next: M6-T3 (chunking/validation/degradation, pure) and M5-T1 (insertion preflight decision, pure). M6-T1 LLM adapter + S2/S3 harness runs need owner API keys.
+Next unblocked pure logic: M5-T1 (insertion preflight decision). Then app-integration + provider work (M6-T1 LLM adapter, M4 STT adapter, S2/S3 harness runs) need owner API keys; M2/M3/M5-T2 need CGEvent/AVFoundation runtime wiring in the app target.
 
 ## Phase 0 spikes (`01-phase0-spikes.md`)
 
@@ -52,7 +52,7 @@ Next: M6-T3 (chunking/validation/degradation, pure) and M5-T1 (insertion preflig
 | M5-T3 paths 2–3 + per-app overrides | todo | Milestone end → prompt owner: `/code-review ultra` |
 | M6-T1 LLMClient protocol + adapters | blocked(S3 decision) | Adapter needs provider choice + keys |
 | M6-T2 prompt assembly (versioned) | done(branch) | `feat/m6-t2-prompt-assembly`, +9 tests; template v1.0.0 (ja), content-hash versioning, injection boundary |
-| M6-T3 chunking/validation/degradation | todo | Pure logic; can proceed next |
+| M6-T3 chunking/validation/degradation | done(branch) | `feat/m6-t3-chunk-validate`, +13 tests; chunker + OutputValidator (empty/summarization/leakage → degrade). Async retry/timeout ladder lands with M6-T1 |
 
 ## Phase 1 — M7–M11 (`04-phase1-m3-experience.md`)
 

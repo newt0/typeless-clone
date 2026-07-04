@@ -1,5 +1,10 @@
 # Decision log
 
+## 2026-07-04 (session 3 — M6-T3 chunk/validate)
+
+- **M6-T3 split into pure logic now + async ladder later.** `TranscriptChunker` (sentence-boundary splitting, never mid-sentence — an oversized lone sentence stays one chunk) and `OutputValidator` (empty / >30% shrink / instruction-leakage → `degrade`) are pure and tested here. The retry/timeout orchestration lands with M6-T1 when a real `LLMClient` exists.
+- **Leakage heuristics**: flag own-prompt fragments, code fences, and whole-output wrapped in ASCII/curly double quotes; Japanese 「」 is NOT flagged (legitimate quoting → too many false positives).
+
 ## 2026-07-04 (session 3 — M6-T2 prompt assembly)
 
 - **System prompt written in Japanese**, template `current` v1.0.0, since the task is Japanese-text formatting. Blocks ordered stable→volatile (role, formatting rules | style, dictionary, app context | transcript) for prompt-cache friendliness (Design §5.2).
