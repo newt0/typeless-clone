@@ -6,6 +6,7 @@ Think in English; respond to the user in Japanese.
 
 ### Commit Messages (Conventional Commits, English)
 
+Claude Code commits at appropriate levels of granularity.
 Write concisely in English. 1 to 2 lines are sufficient.
 
 ### Branches
