@@ -35,7 +35,7 @@ public final class URLSessionWebSocketChannel: WebSocketChannel, @unchecked Send
         endpoint: URL,
         apiKey: String,
         session: URLSession = .shared,
-        timeout: Duration = .seconds(5)
+        timeout: Duration = KoeConstants.sttConnectTimeout
     ) async throws -> WebSocketChannel {
         var request = URLRequest(url: endpoint)
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -59,16 +59,15 @@ public final class URLSessionWebSocketChannel: WebSocketChannel, @unchecked Send
                 task.cancel(with: .abnormalClosure, reason: nil)
                 throw STTError.connection // ping did not return within the timeout
             }
-        } catch let error as STTError {
-            throw error
         } catch {
             // A rejected upgrade (bad/absent key) surfaces here; distinguish auth
             // from a generic transport failure via the captured HTTP response.
-            if let status = (task.response as? HTTPURLResponse)?.statusCode,
+            if !(error is STTError),
+               let status = (task.response as? HTTPURLResponse)?.statusCode,
                status == 401 || status == 403 {
                 throw STTError.auth
             }
-            throw STTError.connection
+            throw STTError.from(error)
         }
     }
 
@@ -137,6 +136,13 @@ public actor SpeechmaticsClient: STTClient {
     /// state if its session is still current (a newer utterance may have
     /// replaced it).
     private var currentSession = 0
+    /// True while a session is live and accepting audio (StartRecognition sent,
+    /// EndOfStream not yet sent). Gates `send`/`endUtterance` so they can't act
+    /// on a merely-prewarmed or already-ended session.
+    private var accepting = false
+    /// Synchronous mutex over `beginUtterance`: set at entry before any `await`,
+    /// so overlapping begins can't open duplicate sockets or race receive loops.
+    private var beginning = false
 
     /// - Parameters:
     ///   - maxDelay: seconds the server may buffer before emitting a final;
@@ -150,7 +156,9 @@ public actor SpeechmaticsClient: STTClient {
         operatingPoint: String = "enhanced",
         maxDelay: Double = 1.0,
         connect: @escaping @Sendable (URL, String) async throws -> WebSocketChannel = {
-            try await URLSessionWebSocketChannel.connect(endpoint: $0, apiKey: $1)
+            try await URLSessionWebSocketChannel.connect(
+                endpoint: $0, apiKey: $1, timeout: KoeConstants.sttConnectTimeout
+            )
         }
     ) {
         self.apiKey = apiKey
@@ -179,8 +187,7 @@ public actor SpeechmaticsClient: STTClient {
         let connect = self.connect
         let task = Task<WebSocketChannel, Error> {
             do { return try await connect(endpoint, apiKey) }
-            catch let error as STTError { throw error }
-            catch { throw STTError.connection }
+            catch { throw STTError.from(error) }
         }
         connectTask = task
         defer { connectTask = nil }
@@ -191,20 +198,23 @@ public actor SpeechmaticsClient: STTClient {
     }
 
     public func beginUtterance(vocab: [STTVocabTerm]) async throws -> AsyncStream<STTEvent> {
+        // Claim the begin synchronously (no `await` above this) so an overlapping
+        // beginUtterance can't open a duplicate socket or spawn a racing loop.
+        guard !beginning else { throw STTError.busy }
+        beginning = true
+        defer { beginning = false }
+
         // A still-live session means we're restarting mid-utterance: end its
         // stream and drop its (single-use) socket so this utterance gets a fresh
-        // one. Normal key-up flow leaves `continuation` nil (torn down on
-        // EndOfTranscript), so this is skipped.
+        // one. Nil `channel` *before* the `await close()` so nothing can reuse the
+        // closing socket. Normal key-up flow leaves `continuation` nil (torn down
+        // on EndOfTranscript), so this is skipped.
         if continuation != nil {
             finishCurrentSession()
-            await channel?.close()
+            let stale = channel
             channel = nil
+            await stale?.close()
         }
-
-        let channel = try await ensureChannel()
-        currentSession += 1
-        let session = currentSession
-        seqNo = 0
 
         let config = Self.startRecognitionMessage(
             language: language,
@@ -212,7 +222,12 @@ public actor SpeechmaticsClient: STTClient {
             maxDelay: maxDelay,
             vocab: vocab
         )
-        try await channel.send(text: config)
+        let channel = try await openSession(config: config)
+
+        currentSession += 1
+        let session = currentSession
+        seqNo = 0
+        accepting = true
 
         let (stream, cont) = AsyncStream<STTEvent>.makeStream(bufferingPolicy: .unbounded)
         continuation = cont
@@ -220,21 +235,48 @@ public actor SpeechmaticsClient: STTClient {
         return stream
     }
 
+    /// Get a channel and send StartRecognition on it. If the (possibly reused,
+    /// idle-closed) socket rejects the send, drop it and reconnect once — this is
+    /// how a prewarmed-then-idle connection self-heals without pinging the hot
+    /// path on every utterance.
+    private func openSession(config: String) async throws -> WebSocketChannel {
+        let channel = try await ensureChannel()
+        do {
+            try await channel.send(text: config)
+            return channel
+        } catch {
+            await channel.close()
+            self.channel = nil
+            let fresh = try await ensureChannel()
+            do {
+                try await fresh.send(text: config)
+            } catch {
+                self.channel = nil
+                throw STTError.from(error)
+            }
+            return fresh
+        }
+    }
+
     public func send(audioChunk: Data) async throws {
-        guard let channel else { throw STTError.notStarted }
-        try await channel.send(binary: audioChunk)
+        guard accepting, let channel else { throw STTError.notStarted }
+        do { try await channel.send(binary: audioChunk) }
+        catch { throw STTError.from(error) }
         seqNo += 1
     }
 
     public func endUtterance() async throws {
-        guard let channel else { throw STTError.notStarted }
-        try await channel.send(text: Self.endOfStreamMessage(lastSeqNo: seqNo))
+        guard accepting, let channel else { throw STTError.notStarted }
+        accepting = false // reject any further send/endUtterance for this session
+        do { try await channel.send(text: Self.endOfStreamMessage(lastSeqNo: seqNo)) }
+        catch { throw STTError.from(error) }
         // Teardown (finish stream, drop the spent socket) happens in the receive
         // loop when the server confirms EndOfTranscript.
     }
 
     /// End the current stream without waiting for the server (restart/cancel).
     private func finishCurrentSession() {
+        accepting = false
         receiveTask?.cancel()
         receiveTask = nil
         continuation?.finish()
@@ -293,6 +335,7 @@ public actor SpeechmaticsClient: STTClient {
         if let event { continuation.yield(event) }
         continuation.finish()
         guard session == currentSession else { return }
+        accepting = false
         channel = nil
         self.continuation = nil
         receiveTask = nil

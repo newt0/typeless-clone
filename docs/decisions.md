@@ -1,5 +1,15 @@
 # Decision log
 
+## 2026-07-05 (session 5 — M4 follow-up code-review fixes)
+
+Second high-effort `/code-review` on the merged M4 adapter surfaced 10 confirmed findings; all fixed on `fix/m4-speechmatics-review` (+7 regression tests, 95 total green).
+
+- **Session gate (`accepting`)**: `send`/`endUtterance` now require a live session (StartRecognition sent, EndOfStream not yet sent), not merely a non-nil `channel`. Fixes: send/endUtterance after `prewarm` alone, send-after-`endUtterance`, and double-`endUtterance` — all now throw `.notStarted` instead of silently transmitting frames on an unstarted/ended session.
+- **Begin mutex (`beginning`)**: set synchronously at `beginUtterance` entry (before any `await`), so an overlapping begin throws `STTError.busy` instead of opening a duplicate socket and spawning a racing receive loop. New `.busy` case added.
+- **Idle-close self-heal**: `openSession` sends StartRecognition and, if the (reused, possibly idle-closed) socket rejects it, drops the socket and reconnects once. Delivers the STTClient "reconnect if the prewarmed socket has closed" contract at `beginUtterance` — with no ping on the hot path (only reconnects when a send actually fails). Restart path also nils `channel` *before* `await close()` so nothing reuses the closing socket.
+- **Error normalization**: `send`/`endUtterance`/`openSession` map raw transport errors (`URLError`, …) to `STTError` via the new `STTError.from(_:)` helper, which also de-duplicates the `catch STTError / else .connection` idiom shared with `verify`/`ensureChannel`.
+- **`sttConnectTimeout` moved to `KoeConstants`** (part of the timeout ladder, tuned in Phase 0) instead of a buried default literal.
+
 ## 2026-07-05 (session 5 — M4-T1/T2 Speechmatics STT adapter)
 
 - **`STTClient` protocol in KoeCore, `SpeechmaticsClient` adapter in KoeProviders** — mirrors the LLM split (`LLMClient`/`GeminiClient`). Delivered M4-T1 + M4-T2 in one PR (as M6-T1 did protocol+adapter together). Built Speechmatics as the design's provisional primary; keys are Keychain-validated, so S2's formal A/B stays a separate later task (STATUS M4-T2 was `blocked(S2 decision)` only for the A/B, not for building the primary).
