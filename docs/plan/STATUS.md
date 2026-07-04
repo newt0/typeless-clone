@@ -13,7 +13,7 @@ Bundle ID fixed: **`dev.newt.Koe`**. The app is a runnable menu-bar skeleton (PR
 
 **Running the app** (owner QA): `xcodegen generate` (once, or after `project.yml` changes) → open `Koe.xcodeproj` in Xcode → Run. Or `open` the built `Koe.app`. It shows a mic icon in the menu bar with History/Settings/Pause/Quit; no dictation yet. `Koe.xcodeproj` is git-ignored (regenerate from `project.yml`). Requires `brew install xcodegen`.
 
-Package has two library targets: **KoeCore** (pure) + **KoeStorage** (GRDB). Storage layer done (History M7-T1, Dictionary M8-T1). Remaining solo-buildable work is now app-UI/runtime: M7-T2 history UI, M9 HUD, M10 settings, M2/M3 hotkey+audio, M5-T2 paste — all need app-target wiring (and owner QA for TCC/insertion). Provider work (M4/M6-T1/S2/S3) needs owner API keys.
+Targets: **KoeCore** (pure) + **KoeStorage** (GRDB) + **KoeProviders** (API adapters). **Gemini + Speechmatics keys are in the Keychain and validated.** The formatting pipeline works end-to-end against real Gemini (filler removal / self-correction / punctuation verified live). Next toward the vertical slice: **M4 Speechmatics STT adapter** (WebSocket streaming), then wire hotkey+audio+STT+format+paste into the app (M2/M3/M5-T2 — need runtime + owner QA). Live tests: `KOE_LIVE_TESTS=1 ./scripts/test.sh`.
 
 ## Phase 0 spikes (`01-phase0-spikes.md`)
 
@@ -50,7 +50,7 @@ Package has two library targets: **KoeCore** (pure) + **KoeStorage** (GRDB). Sto
 | M5-T1 preflight / ContextProvider | done(branch) | `feat/m5-t1-preflight`, +7 tests; pure decision (secure→block no-clipboard, app-changed→hold). AX/IsSecureEventInput reads are the M5-T2 runtime part |
 | M5-T2 paste simulation path 1 | todo | |
 | M5-T3 paths 2–3 + per-app overrides | todo | Milestone end → prompt owner: `/code-review ultra` |
-| M6-T1 LLMClient protocol + adapters | blocked(S3 decision) | Adapter needs provider choice + keys |
+| M6-T1 LLMClient protocol + adapters | done(branch) | `feat/m6-t1-gemini`, +8 tests; new KoeProviders target; GeminiClient (thinking off, ~0.8s by curl) + LLMFormatter (Formatting seam). Live-verified formatting. Streaming + long-form chunking deferred; S3 golden-set quality A/B still to run |
 | M6-T2 prompt assembly (versioned) | done(branch) | `feat/m6-t2-prompt-assembly`, +9 tests; template v1.0.0 (ja), content-hash versioning, injection boundary |
 | M6-T3 chunking/validation/degradation | done(branch) | `feat/m6-t3-chunk-validate`, +13 tests; chunker + OutputValidator (empty/summarization/leakage → degrade). Async retry/timeout ladder lands with M6-T1 |
 

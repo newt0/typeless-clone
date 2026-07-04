@@ -1,5 +1,15 @@
 # Decision log
 
+## 2026-07-05 (session 4 — M6-T1 Gemini adapter)
+
+- **New `KoeProviders` target** for STT/LLM API adapters (URLSession; no third-party deps), keeping KoeCore pure. GeminiClient lives here; `LLMClient`/`LLMFormatter` protocols+logic stay in KoeCore.
+- **`LLMClient` is non-streaming for P0** (`complete(system:user:) -> String`). The pipeline inserts once (invariant 6) and the `Formatting` seam is already non-streaming, so streaming buys only perceived latency — deferred as a TTFT optimization.
+- **Gemini thinking disabled** via `generationConfig.thinkingConfig.thinkingBudget = 0` (Design §4/§8). Verified by curl: 0.81s with it off vs 1.46s default — it works and matters.
+- **Live formatting verified**: 「えーとですね、明日、いや明後日に資料を送りますので…」→「明後日に資料を送りますので、よろしくお願いします。」(filler removed, self-correction merged, punctuation added).
+- **Latency caveat**: the same call took ~90s inside the `swift test` process (likely IPv6 happy-eyeballs / sandbox first-connection), while curl is ~0.8s. Not a code defect; to be measured properly in Phase 0 S4 on the real app.
+- **Live integration test is opt-in** (`KOE_LIVE_TESTS=1` + Keychain/env key) so the default suite stays fast and CI stays keyless (test skips without the flag/key). Keyed results are pasted into the PR per the workflow.
+- Built Gemini as primary per the design's provisional selection; the S3 golden-set quality A/B is a separate task (needs the golden set authored) and can run against this adapter later.
+
 ## 2026-07-04 (session 3 — M7-T1 history/GRDB)
 
 - **GRDB isolated in a new `KoeStorage` target** (KoeCore stays dependency-free). `Package.resolved` is now committed (removed from .gitignore) for reproducible dependency versions; GRDB pinned at 7.11.1.

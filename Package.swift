@@ -13,6 +13,7 @@ let package = Package(
     products: [
         .library(name: "KoeCore", targets: ["KoeCore"]),
         .library(name: "KoeStorage", targets: ["KoeStorage"]),
+        .library(name: "KoeProviders", targets: ["KoeProviders"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
@@ -28,5 +29,8 @@ let package = Package(
             ]
         ),
         .testTarget(name: "KoeStorageTests", dependencies: ["KoeStorage"]),
+        // STT/LLM provider adapters (URLSession); no third-party deps.
+        .target(name: "KoeProviders", dependencies: ["KoeCore"]),
+        .testTarget(name: "KoeProvidersTests", dependencies: ["KoeProviders"]),
     ]
 )
