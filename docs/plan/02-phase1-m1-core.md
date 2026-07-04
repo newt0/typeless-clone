@@ -2,8 +2,6 @@
 
 Prereq reading: `00-overview.md`. Task IDs are `M<milestone>-T<n>`; dependencies reference those IDs. Each milestone should land as one or a few PRs; `pnpm`-style checks here are `xcodebuild build` + unit tests.
 
----
-
 ## M0 — Project bootstrap
 
 ### M0-T1 Xcode project + repo layout
@@ -24,8 +22,6 @@ Prereq reading: `00-overview.md`. Task IDs are `M<milestone>-T<n>`; dependencies
 - Design ref: §7.7, §9.3.
 - Depends: M0-T1.
 
----
-
 ## M1 — DictationSession state machine
 
 ### M1-T1 State machine actor
@@ -45,8 +41,6 @@ Prereq reading: `00-overview.md`. Task IDs are `M<milestone>-T<n>`; dependencies
 - Design ref: §7.2, §10.4.
 - Depends: M1-T1.
 
----
-
 ## M2 — HotkeyManager
 
 ### M2-T1 CGEventTap for Fn
@@ -65,8 +59,6 @@ Prereq reading: `00-overview.md`. Task IDs are `M<milestone>-T<n>`; dependencies
 - Acceptance: simulated tap-disable event re-enables within one event cycle; alt hotkey drives a full session identically to Fn.
 - Design ref: §7.3, §11.3, risk R7.
 - Depends: M2-T1.
-
----
 
 ## M3 — AudioCapture
 

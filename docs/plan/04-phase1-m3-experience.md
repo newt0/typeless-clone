@@ -2,8 +2,6 @@
 
 Prereq reading: `00-overview.md`. M7 should land early (M6/M5 reference `HistoryWriting`); M9–M11 polish the experience and close Phase 1.
 
----
-
 ## M7 — HistoryStore (write-ahead, FTS5)
 
 ### M7-T1 Schema + write-ahead writes
@@ -23,8 +21,6 @@ Prereq reading: `00-overview.md`. M7 should land early (M6/M5 reference `History
 - Design ref: §1.4 (metrics), §5.5, §9.3.
 - Depends: M7-T1, M10-T1 (settings).
 
----
-
 ## M8 — DictionaryStore
 
 ### M8-T1 Store + dual feed
@@ -34,8 +30,6 @@ Prereq reading: `00-overview.md`. M7 should land early (M6/M5 reference `History
 - Acceptance: adding a term changes both the STT session config (next session) and the assembled prompt; unit test the two serializers.
 - Design ref: §5.2 [4], §4.1 (FR-05).
 - Depends: M4-T2, M6-T2.
-
----
 
 ## M9 — HUDController
 
@@ -47,8 +41,6 @@ Prereq reading: `00-overview.md`. M7 should land early (M6/M5 reference `History
 - Acceptance: manual — dictating into a focused text field never loses focus or IME composition state in the target app; HUD visible over full-screen apps; every pipeline notice from M3–M6 renders.
 - Design ref: §7.5, §10.2.
 - Depends: M1-T1.
-
----
 
 ## M10 — SettingsStore + instrumentation
 
@@ -68,8 +60,6 @@ Prereq reading: `00-overview.md`. M7 should land early (M6/M5 reference `History
 - Acceptance: after N test dictations the stats view matches raw rows; audit confirms no text columns.
 - Design ref: §8.4, §5.5, §9.3.
 - Depends: M1-T1, M7-T1.
-
----
 
 ## M11 — Onboarding + permission lifecycle
 
@@ -95,8 +85,6 @@ SwiftUI window, steps skippable (but app shows ⚠︎ state without steps 2–3)
 - Acceptance: revoke Accessibility while running → ⚠︎ within 60s, hotkey press produces the panel, re-grant restores function without relaunch (or prompts restart if the tap can't revive).
 - Design ref: §11.3, risk R7/R8.
 - Depends: M2-T2, M11-T1.
-
----
 
 ## Phase 1 exit gate (before any distribution)
 

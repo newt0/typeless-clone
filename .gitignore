@@ -33,3 +33,11 @@ dist-ssr
 # Claude Code のローカル個人設定（権限許可など。共有しない）
 .claude/settings.local.json
 __pycache__/
+
+# Swift / SwiftPM / Xcode
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+Package.resolved
