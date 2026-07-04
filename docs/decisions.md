@@ -1,5 +1,14 @@
 # Decision log
 
+## 2026-07-05 (session 6 — M2-T1 Fn hotkey)
+
+- **Hotkey split: pure engine in KoeCore + CGEventTap in the app target** (mirrors the STT `WebSocketChannel` seam). `HotkeyEngine` (hold/toggle → start/stop, key-repeat/spurious-transition idempotent) and `FnKey` (keycode 63 + `maskSecondaryFn` → `.down`/`.up`) are pure and unit-tested (+20 tests); `App/FnHotkeyTap.swift` is the thin, untestable adapter that owns the real tap. Keeps activation semantics testable without synthesizing system events.
+- **Tap callback runs on the main run loop; `MainActor.assumeIsolated` (no async hop).** The source is installed on `CFRunLoopGetMain()`, so the `@convention(c)` trampoline is always on the main thread — asserting isolation avoids a dispatch hop on the press→recording latency path (FR-01). `@preconcurrency import CoreGraphics` silences the spurious non-`Sendable` `CGEvent` diagnostic across that boundary.
+- **Immediate `tapDisabled*` re-enable included in M2-T1; the 60s liveness timer + revocation → ⚠︎ re-guidance stay M2-T2.** Without the inline re-enable the tap silently dies on the first timeout, which would make the M2-T1 manual QA (Fn hold triggers callbacks) flaky. The periodic verification/revocation handling is genuinely M2-T2 and left there.
+- **No `deinit` teardown on `FnHotkeyTap`.** The single instance is owned by `AppDelegate` for the whole app lifetime; a nonisolated `deinit` cannot touch the `@MainActor` tap/source state anyway. Teardown lives in `stop()`.
+- **Tap mask is `flagsChanged`-only in M2-T1, not the plan's `keyDown|keyUp|flagsChanged`.** M2-T1 consumes only the Fn key (a `flagsChanged` event); subscribing to key-down/up would route every system-wide keystroke through our main-thread callback before the M2-T2 alt hotkey exists to use them. The two are added back with the alt-hotkey binding. (Post-review cleanup finding.)
+- **Re-enable path calls `engine.reset()`.** A tap disabled mid-hold can miss the Fn key-up, latching `isActive` true; the `tapDisabled*` recovery now resets the engine (emitting `.stop` if needed) so recording state can't stick on. (Post-review correctness finding.)
+
 ## 2026-07-05 (session 5 — M4 follow-up code-review fixes)
 
 Second high-effort `/code-review` on the merged M4 adapter surfaced 10 confirmed findings; all fixed on `fix/m4-speechmatics-review` (+7 regression tests, 95 total green).
