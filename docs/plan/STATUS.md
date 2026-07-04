@@ -68,11 +68,13 @@ Package has two library targets: **KoeCore** (pure) + **KoeStorage** (GRDB). Sto
 | M11-T2 permission revocation handling | todo | |
 | Phase 1 exit gate | todo | Owner: 2-week dogfood + `/code-review ultra` + checklist in `04` |
 
-## Owner-blocked items (see workflow doc §Owner's standing task list)
+## Owner-blocked items
 
-- [ ] **Install Xcode** (full) from the Mac App Store, then `sudo xcode-select -s /Applications/Xcode.app` — unblocks the app target and all runtime QA
-- [ ] `gh auth login` (did not reach Claude's shell last time — re-run and confirm `gh auth status` shows logged in)
-- [ ] Decide the permanent **bundle ID** (e.g. `dev.newt.Koe` or `com.<you>.koe`)
-- [ ] STT API keys: Speechmatics / Deepgram / Soniox
-- [ ] LLM API keys: Google AI (Gemini paid tier) / AWS Bedrock (Tokyo)
-- [ ] S2 utterance recordings (~100 clips; script list to be provided by Claude)
+Owner-facing step-by-step guide (Japanese): **`docs/owner-guide.md`**.
+
+- [x] Install Xcode (26.6) + `xcode-select`
+- [x] `gh auth login`
+- [x] Bundle ID decided: `dev.newt.Koe`
+- [ ] **[critical path] API keys: Gemini (paid tier) + Speechmatics** → stored in Keychain (`security add-generic-password -s dev.newt.Koe -a geminiAPIKey/speechmaticsAPIKey`). Unblocks M4/M6-T1 and the first vertical slice.
+- [ ] Phase 0 A/B keys (later): Deepgram / Soniox / AWS Bedrock (Tokyo)
+- [ ] S2 utterance recordings (~100 clips; script list provided by Claude on request)
