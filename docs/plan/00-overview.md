@@ -12,6 +12,8 @@ Source of truth: `docs/notes/2026-07-04-typeless-clone-design.md` (Japanese, 13 
 | `03-phase1-m2-pipeline.md` | M4 STT client, M5 text insertion, M6 LLM formatting |
 | `04-phase1-m3-experience.md` | M7 history, M8 dictionary, M9 HUD, M10 settings/telemetry, M11 onboarding |
 | `05-phase2-3-roadmap.md` | Phase 2 (relay server, distribution) and Phase 3 (P1 features) — outline only |
+| `06-autonomous-workflow.md` | Autonomous dev workflow: task lifecycle, quality gates, escalation rules (owner does not review code) |
+| `STATUS.md` | Live task board — single source of truth for progress; read first every session |
 
 Execution order: Phase 0 (S1–S4) → Phase 1 milestones M0→M11 (M-order = dependency order). Phase 0 results fix the STT/LLM provider choice and several numeric constants marked **[tune in Phase 0]**.
 
