@@ -1,5 +1,13 @@
 # Decision log
 
+## 2026-07-04 (session 3 — M6-T2 prompt assembly)
+
+- **System prompt written in Japanese**, template `current` v1.0.0, since the task is Japanese-text formatting. Blocks ordered stable→volatile (role, formatting rules | style, dictionary, app context | transcript) for prompt-cache friendliness (Design §5.2).
+- **Template version = `semver + SHA-256(text)[:8]`** so accidental drift is caught even without a semver bump; recorded per dictation for quality attribution (§5.6).
+- **Injection boundary hardened**: transcript wrapped in `<transcript>` tags AND any literal `<transcript>`/`</transcript>` in the transcript is stripped (STT never emits real tags, so nothing meaningful is lost). Role rules also instruct the model to treat tag content as data.
+- **`docs/code-sample/Typeless.app` (competitor binary) deleted** at owner request; not used. Implementation stays clean-room from own design + cited OSS (see prior session note recommending against decompilation).
+- **claude-api skill not loaded** for this task: pure provider-agnostic prompt-string assembly, no API call/model/param choice. Will load it for M6-T1 (Gemini/Bedrock adapters).
+
 Audit trail replacing human code review (see `docs/plan/06-autonomous-workflow.md`). One dated entry per non-obvious decision: what was decided, why, alternatives rejected. Newest first.
 
 ## 2026-07-04 (session 3 — M0-T2 app shell)
