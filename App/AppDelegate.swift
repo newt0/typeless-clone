@@ -15,12 +15,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.statusItemController = statusItemController
         Log.event("app_launched", category: .app)
 
-        // Audio capture (M3-T1). Built prepared-but-stopped; the hotkey only
-        // pays start(). Until the STT client is wired (M4), the produced chunk
-        // stream is just drained so it can't build up — SessionAudioBuffer is
-        // the retained copy for resend.
+        // Audio capture (M3-T1/M3-T2). Built prepared-but-stopped; the hotkey
+        // only pays start(). Until the STT client is wired (M4), the produced
+        // chunk stream is just drained so it can't build up — SessionAudioBuffer
+        // is the retained copy for resend.
+        //
+        // "Prefer built-in mic" defaults ON (M3-T2) so a freshly-connected
+        // Bluetooth headset (HFP, poor STT) can't hijack dictation; the closure
+        // is re-read each start so a future Settings toggle takes effect without
+        // rebuilding the engine. On a mid-session device switch (AirPods drop)
+        // the HUD switch notice lands in M9 — for now capture continues silently
+        // and the engine logs `audio_device_switched`.
         let audioEngine = AudioCaptureEngine(
-            onCapReached: { statusItemController.setRecording(false) }
+            preferBuiltIn: { UserDefaults.standard.object(forKey: "preferBuiltInMic") as? Bool ?? true },
+            onCapReached: { statusItemController.setRecording(false) },
+            onDeviceSwitched: { _ in /* M9 HUD switch notice */ }
         )
         self.audioEngine = audioEngine
 

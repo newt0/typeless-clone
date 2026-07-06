@@ -1,5 +1,12 @@
 # Decision log
 
+## 2026-07-06 (session 9 — M3-T2 device-switch survival)
+
+- **Pure/adapter split (same as M3-T1).** `InputDeviceSelector` + `AudioInputDevice` in `KoeCore` decide which input device to record from (`select`) and whether a mid-recording route change warrants switching (`resolveSwitch`), unit-tested (+11); the untestable CoreAudio enumeration/listener glue is `App/AudioDeviceObserver.swift` and the device-pinning/tap-rebind lives in `AudioCaptureEngine`.
+- **"Prefer built-in mic" default ON, implemented by pinning.** macOS otherwise follows the system default onto a freshly-connected Bluetooth headset (HFP, degrades STT). The engine pins the selected device via `kAudioOutputUnitProperty_CurrentDevice` on the input node's audio unit, so a headset connecting mid-session does **not** steal capture. The pref is a `preferBuiltIn: () -> Bool` closure re-read each start (UserDefaults key `preferBuiltInMic`, default true) so a future Settings toggle needs no engine rebuild.
+- **Device-switch continues the same session (invariant 1).** On a default-input change (`AudioDeviceObserver`) or `.AVAudioEngineConfigurationChange` (the pinned device vanished), `resolveSwitch` re-selects; a `.switchTo` stops the engine, re-pins, rebuilds only the `AVAudioConverter` for the new input format, `rebind`s it into the existing `TapState` (so the `SessionAudioBuffer` and chunk `AsyncStream` survive), reinstalls the tap, and restarts — the transcript spans both devices. Switch is notified via `onDeviceSwitched` for the M9 HUD (logged `audio_device_switched`; the device name never hits `Log`, invariant 4).
+- **Swift 6 concurrency:** `AudioDeviceObserver` is `@unchecked Sendable` so the HAL listener block can weak-capture it; the block hops `DispatchQueue.main.async` → `MainActor.assumeIsolated` before touching main-only state (`onChange`), mirroring the `FnHotkeyTap` assume-isolated pattern.
+
 ## 2026-07-06 (session 8 — M3-T1 audio engine + buffer)
 
 - **Pure/adapter split for audio.** `AudioFormatSpec` (16kHz/mono/PCM16 wire numbers + chunk-frame/byte-budget math) and `SessionAudioBuffer` (in-memory session audio, 20-min/≈38MB cap → truncate-and-signal `.capReached`) live in `KoeCore` and are unit-tested (+12); the untestable `AVAudioEngine`/`AVAudioConverter` glue is `App/AudioCaptureEngine.swift`, mirroring the `HotkeyEngine`/`FnHotkeyTap` pattern. Non-Sendable AVFoundation state is isolated in a private `TapState` (`@unchecked Sendable`) only ever touched on CoreAudio's serialized tap thread.
