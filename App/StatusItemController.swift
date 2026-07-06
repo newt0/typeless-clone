@@ -16,12 +16,13 @@ final class StatusItemController {
     /// working alt hotkey can't silently clear the ⚠︎ for a dead Fn path.
     private var permissionWarning = false
 
-    /// DEBUG-only QA action: triggers a delayed paste so the owner can verify
-    /// path 1 (M5-T2) before the STT→format→paste pipeline is wired end-to-end.
-    private let onTestPaste: (() -> Void)?
+    /// DEBUG-only QA actions: delayed pastes so the owner can exercise each
+    /// insertion path (M5-T2/T3) before the STT→format→paste pipeline is wired
+    /// end-to-end. Each entry becomes a menu item.
+    private let qaActions: [(title: String, run: () -> Void)]
 
-    init(onTestPaste: (() -> Void)? = nil) {
-        self.onTestPaste = onTestPaste
+    init(qaActions: [(title: String, run: () -> Void)] = []) {
+        self.qaActions = qaActions
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         applyIcon()
         statusItem.menu = buildMenu()
@@ -63,13 +64,17 @@ final class StatusItemController {
         menu.addItem(withTitle: "Pause", action: nil, keyEquivalent: "") // placeholder
 
         #if DEBUG
-        if onTestPaste != nil {
-            let test = menu.addItem(
-                withTitle: "Insert Test Text (QA, 2s delay)",
-                action: #selector(runTestPaste),
-                keyEquivalent: ""
-            )
-            test.target = self
+        if !qaActions.isEmpty {
+            menu.addItem(.separator())
+            for (index, action) in qaActions.enumerated() {
+                let item = menu.addItem(
+                    withTitle: action.title,
+                    action: #selector(runQAAction(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.tag = index
+            }
         }
         #endif
 
@@ -81,8 +86,9 @@ final class StatusItemController {
     }
 
     #if DEBUG
-    @objc private func runTestPaste() {
-        onTestPaste?()
+    @objc private func runQAAction(_ sender: NSMenuItem) {
+        guard qaActions.indices.contains(sender.tag) else { return }
+        qaActions[sender.tag].run()
     }
     #endif
 

@@ -7,51 +7,59 @@ import Carbon.HIToolbox
 @preconcurrency import CoreGraphics
 import KoeCore
 
-/// Path 1 text insertion — paste simulation (Design §6.2, §6.3; plan M5-T2).
+/// Text insertion with the full fallback chain (Design §6.2, §6.3, §10.2-3;
+/// plan M5-T2 path 1, M5-T3 paths 2–3 + per-app overrides).
 ///
-/// The reliability-critical primary path: snapshot the clipboard → write the
-/// formatted text with nspasteboard markers → synthesize Cmd+V → restore the
-/// snapshot. Direct AX writing is never used (silent-failure prone; Design
-/// §6.1). AX is read-only, for the preflight and best-effort verification (both
-/// via ``InsertionContextProvider``).
+/// Preflight → walk the insertion plan for the target app:
+/// - **Path 1** (`.paste`): snapshot clipboard → write marked payload →
+///   synthetic Cmd+V → best-effort AX verify → restore. (M5-T2)
+/// - **Path 2** (`.appleScript`): same, but the keystroke is sent via
+///   `System Events` AppleScript — the fallback for the minority of apps where
+///   CGEvent paste doesn't land.
+/// - **Path 3** (`.clipboardOnly`): the designed landing — leave the marked
+///   text on the clipboard for a manual ⌘V (invariant 1's triple landing:
+///   clipboard + HUD + history; HUD is M9, history write-ahead is M7).
 ///
-/// This is the untestable system-API adapter; the pure pieces live in KoeCore
-/// (``InsertionPreflight``, ``PasteTextPreparer``, ``PasteboardMarkers``,
-/// ``PasteVerification``).
-///
-/// Scope note (M5-T2): paths 2–3 land in M5-T3. Here, a secure context blocks
-/// (nothing inserted or copied), an app-change or an explicitly-verified paste
-/// failure leaves the marked text on the clipboard as the designed fallback
-/// landing, and everything else pastes and restores.
+/// Direct AX writing is never used (silent-failure prone; Design §6.1). AX is
+/// read-only, for the preflight and best-effort verification (both via
+/// ``InsertionContextProvider``). The pure ordering/decision logic lives in
+/// KoeCore (``InsertionPreflight``, ``InsertionPathPlanner``, ``InsertionChain``,
+/// ``InsertionOverrideTable``, ``PasteTextPreparer``, ``PasteboardMarkers``,
+/// ``PasteVerification``); this class is the untestable system-API adapter.
 @MainActor
 final class PasteSimulator: TextInserting {
     private let context: InsertionContextProvider
     private let ownBundleID: String
+    /// Per-app override table (preferred path + extra pre-delay). Empty by
+    /// default; Settings (M10) rebuilds it. Resolved against the target app's
+    /// bundle id at insertion time.
+    private let overrides: InsertionOverrideTable
     /// Frontmost bundle id captured when the current recording started; the
     /// coordinator supplies this at record time (future wiring). `nil` skips the
     /// app-change guard — used by the QA hook, which pastes wherever the cursor is.
     ///
-    /// ⚠︎ M5-T3 wiring note: this is a single fixed closure, so it cannot tell
+    /// ⚠︎ pipeline-wiring note: this is a single fixed closure, so it cannot tell
     /// two *overlapping* utterances apart (SessionCoordinator records
     /// concurrently, serializing only at insertion). Before wiring the real
     /// pipeline, the per-utterance recording bundle id must be threaded through
     /// `UtteranceContext` (or captured per `insert` call), not read from one
-    /// shared closure — otherwise the app-change preflight can consult the wrong
-    /// utterance's app. See docs/decisions.md (session 10).
+    /// shared closure. See docs/decisions.md (session 10).
     private let recordingBundleID: @Sendable () -> String?
 
     /// Guards against overlapping insertions racing on the shared NSPasteboard
     /// snapshot/restore. Production is already serialized by `InsertionSerializer`;
-    /// this backstops the DEBUG QA hook, which can be fired repeatedly.
+    /// this backstops the DEBUG QA hooks, which can be fired repeatedly.
     private var isInserting = false
 
     init(
         context: InsertionContextProvider = InsertionContextProvider(),
         ownBundleID: String = Bundle.main.bundleIdentifier ?? "dev.newt.Koe",
+        overrides: InsertionOverrideTable = InsertionOverrideTable(),
         recordingBundleID: @escaping @Sendable () -> String? = { nil }
     ) {
         self.context = context
         self.ownBundleID = ownBundleID
+        self.overrides = overrides
         self.recordingBundleID = recordingBundleID
     }
 
@@ -63,17 +71,9 @@ final class PasteSimulator: TextInserting {
 
     // MARK: Insertion
 
-    /// Run the preflight and, if clear, path 1. Also the direct entry for QA.
+    /// Run the preflight and, if clear, the per-app insertion plan.
     func performInsert(_ text: String) async -> InsertResult {
-        // Re-entrancy guard: a second insertion started while one is still in
-        // flight would snapshot the first's marked payload and clobber the
-        // user's real clipboard on restore. Check-and-set is atomic on the main
-        // actor (no await between them).
-        guard !isInserting else {
-            Log.event("insert_reentrant_skipped", category: .insertion)
-            return .clipboardFallback
-        }
-        isInserting = true
+        guard beginInserting() else { return .clipboardFallback }
         defer { isInserting = false }
 
         let facts = context.preflightFacts(recordingBundleID: recordingBundleID())
@@ -86,6 +86,7 @@ final class PasteSimulator: TextInserting {
         case .clipboardHold:
             // Frontmost app changed since recording: don't paste into the wrong
             // window — leave the marked text for the user to ⌘V (Design §6.3-1).
+            // This is the path-3 landing, decided up front by the preflight.
             Log.event("insert_clipboard_hold_app_changed", category: .insertion)
             let prepared = PasteTextPreparer.prepare(text, targetBundleID: facts.frontmostBundleID).text
             if !putMarkedText(prepared, on: NSPasteboard.general) {
@@ -94,74 +95,147 @@ final class PasteSimulator: TextInserting {
             return .clipboardFallback
 
         case .proceed:
-            return await pasteSimulation(text, targetBundleID: facts.frontmostBundleID)
+            let override = overrides.override(for: facts.frontmostBundleID)
+            return await runPlan(
+                preferred: override?.preferredPath ?? .paste,
+                extraPreDelay: override?.extraPreDelay ?? .zero,
+                text: text,
+                targetBundleID: facts.frontmostBundleID
+            )
         }
     }
 
-    private func pasteSimulation(_ rawText: String, targetBundleID: String?) async -> InsertResult {
+    /// Set the re-entrancy guard. Returns `false` (and logs) if an insertion is
+    /// already in flight; check-and-set is atomic on the main actor.
+    private func beginInserting() -> Bool {
+        guard !isInserting else {
+            Log.event("insert_reentrant_skipped", category: .insertion)
+            return false
+        }
+        isInserting = true
+        return true
+    }
+
+    /// Prepare the text and walk the plan from `preferred`. Shared by production
+    /// and the DEBUG force-path QA hooks.
+    private func runPlan(
+        preferred: InsertionPath,
+        extraPreDelay: Duration,
+        text rawText: String,
+        targetBundleID: String?
+    ) async -> InsertResult {
         let prep = PasteTextPreparer.prepare(rawText, targetBundleID: targetBundleID)
         if prep.warnNewlines {
             // HUD caution lands in M9; log the hazard for now.
             Log.event("paste_terminal_newline", category: .insertion)
         }
 
-        let pasteboard = NSPasteboard.general
-
         // Nothing safe to paste (e.g. an all-newline terminal payload stripped to
-        // empty). Don't run the paste/verify/restore dance and don't claim a
-        // paste happened; leave the raw text on the clipboard for a manual ⌘V so
-        // nothing is lost (history already has it via write-ahead, invariant 1).
+        // empty). Don't run the chain or claim a paste; leave the raw text on the
+        // clipboard for a manual ⌘V so nothing is lost (history has it, inv. 1).
         guard !prep.text.isEmpty else {
             Log.event("paste_empty_after_prep", category: .insertion)
             guard !rawText.isEmpty else { return .pasted } // truly nothing to insert
-            if !putMarkedText(rawText, on: pasteboard) {
+            if !putMarkedText(rawText, on: NSPasteboard.general) {
                 Log.error("paste_clipboard_write_failed", category: .insertion)
             }
             return .clipboardFallback
         }
 
+        // Snapshot the user's clipboard ONCE, before any path writes to it, and
+        // thread it through every attempt. A per-attempt snapshot would let a
+        // later path capture an earlier *failed* path's leftover marked payload
+        // (failed paths intentionally don't restore) and then "restore" that
+        // instead of the user's real content — silently clobbering the clipboard.
+        let originalSnapshot = snapshotItems(NSPasteboard.general)
+        let plan = InsertionPathPlanner.plan(preferred: preferred)
+        return await InsertionChain.run(plan) { [self] path in
+            await attempt(path, text: prep.text, extraPreDelay: extraPreDelay, originalSnapshot: originalSnapshot)
+        }
+    }
+
+    /// Perform one path's system work and report whether it landed.
+    /// `originalSnapshot` is the user's pre-chain clipboard, restored on a landed
+    /// keystroke paste (shared across all paths — see ``runPlan``).
+    private func attempt(
+        _ path: InsertionPath,
+        text: String,
+        extraPreDelay: Duration,
+        originalSnapshot: [[NSPasteboard.PasteboardType: Data]]
+    ) async -> PathAttempt {
+        switch path {
+        case .paste:
+            let outcome = await pasteViaKeystroke(
+                text: text, extraPreDelay: extraPreDelay, success: .pasted,
+                originalSnapshot: originalSnapshot, post: { [self] in await postCmdV() }
+            )
+            if case .landed = outcome { Log.event("paste_done", category: .insertion) }
+            return outcome
+
+        case .appleScript:
+            let outcome = await pasteViaKeystroke(
+                text: text, extraPreDelay: extraPreDelay, success: .pastedViaAppleScript,
+                originalSnapshot: originalSnapshot, post: { [self] in await runAppleScriptPaste() }
+            )
+            if case .landed = outcome { Log.event("paste_applescript_done", category: .insertion) }
+            return outcome
+
+        case .clipboardOnly:
+            // Designed landing (Design §6.2): leave the marked text for ⌘V.
+            if !putMarkedText(text, on: NSPasteboard.general) {
+                Log.error("paste_clipboard_write_failed", category: .insertion)
+            }
+            Log.event("paste_clipboard_landing", category: .insertion)
+            return .landed(.clipboardFallback)
+        }
+    }
+
+    /// Shared paste body for paths 1 and 2 (they differ only in how the Cmd+V
+    /// keystroke is delivered via `post`). Snapshot → write marked payload →
+    /// pre-delay → post → settle → verify → restore-if-still-ours.
+    private func pasteViaKeystroke(
+        text: String,
+        extraPreDelay: Duration,
+        success: InsertResult,
+        originalSnapshot: [[NSPasteboard.PasteboardType: Data]],
+        post: () async -> Bool
+    ) async -> PathAttempt {
+        let pasteboard = NSPasteboard.general
         let sessionID = UUID()
         let sessionType = NSPasteboard.PasteboardType(PasteboardMarkers.sessionType(sessionID))
 
-        // 1. Snapshot every item/type to memory so we can restore afterward.
-        let snapshot = snapshotItems(pasteboard)
-
-        // 2. Write the marked payload. If the write itself fails (pasteboard
-        // ownership raced away), don't post Cmd+V — that would paste stale
-        // content. History still holds the text (write-ahead), so land on the
-        // clipboard-fallback path.
-        guard writePayload(prep.text, sessionID: sessionID, sessionType: sessionType, to: pasteboard) else {
+        // If the write fails (pasteboard ownership raced away), don't post the
+        // keystroke — that would paste stale content. Advance; the payload isn't
+        // there but history holds the text and the next path re-writes it.
+        guard writePayload(text, sessionID: sessionID, sessionType: sessionType, to: pasteboard) else {
             Log.error("paste_write_failed", category: .insertion)
-            return .clipboardFallback
+            return .advance
         }
 
-        // 3. Pre-delay, then 4. synthesize Cmd+V.
-        try? await Task.sleep(for: KoeConstants.pastePreDelay)
-        await postCmdV()
+        try? await Task.sleep(for: KoeConstants.pastePreDelay + extraPreDelay)
+        // Couldn't deliver the keystroke → advance, leaving the payload for the
+        // next path.
+        guard await post() else { return .advance }
 
         // The restore wait doubles as the settle window that lets the paste land
         // before the best-effort AX verification reads the focused element.
         try? await Task.sleep(for: KoeConstants.clipboardRestoreWait)
-
-        // 5. Best-effort verification. Only an explicit failure changes behavior.
-        if verify(insertedText: prep.text) == .verifiedFailed {
-            // Path 2 (AppleScript) lands in M5-T3. For now leave the marked
-            // payload on the clipboard as the fallback landing — do NOT restore
-            // (restoring would drop the text the paste failed to insert).
+        if verify(insertedText: text) == .verifiedFailed {
+            // Explicit failure → next path. Do NOT restore (restoring would drop
+            // the text the paste failed to insert); the marked payload stays.
             Log.event("paste_verify_failed", category: .insertion)
-            return .clipboardFallback
+            return .advance
         }
 
-        // 6. Restore the user's clipboard — but only if our write is still the
+        // Restore the user's clipboard — but only if our write is still the
         // current content. If the session marker is gone, another process wrote
         // in the meantime and restoring would clobber it (Design §6.3-6).
         if pasteboard.types?.contains(sessionType) ?? false {
-            if !restore(snapshot, to: pasteboard) {
+            if !restore(originalSnapshot, to: pasteboard) {
                 Log.error("paste_restore_failed", category: .insertion)
             }
         }
-        Log.event("paste_done", category: .insertion)
-        return .pasted
+        return .landed(success)
     }
 
     // MARK: Clipboard
@@ -197,9 +271,9 @@ final class PasteSimulator: TextInserting {
         return pasteboard.writeObjects([item])
     }
 
-    /// Leave marked text on the clipboard for a manual ⌘V (app-change,
-    /// verify-failure, and empty-payload landings). Generates a throwaway session
-    /// id since there is no restore to gate. Returns whether the write succeeded.
+    /// Leave marked text on the clipboard for a manual ⌘V (path 3, app-change,
+    /// and empty-payload landings). Generates a throwaway session id since there
+    /// is no restore to gate. Returns whether the write succeeded.
     @discardableResult
     private func putMarkedText(_ text: String, on pasteboard: NSPasteboard) -> Bool {
         let sessionID = UUID()
@@ -222,15 +296,16 @@ final class PasteSimulator: TextInserting {
         return pasteboard.writeObjects(items)
     }
 
-    // MARK: Synthetic Cmd+V
+    // MARK: Keystroke delivery
 
-    /// Post Cmd↓ → V↓ → V↑ → Cmd↑ from a private event source to the HID tap,
-    /// 10ms apart (Design §6.3-4). The "v" keycode is resolved for the current
-    /// layout so non-QWERTY layouts still paste.
-    private func postCmdV() async {
+    /// Path 1: post Cmd↓ → V↓ → V↑ → Cmd↑ from a private event source to the HID
+    /// tap, 10ms apart (Design §6.3-4). The "v" keycode is resolved for the
+    /// current layout so non-QWERTY layouts still paste. Returns whether the
+    /// event source could be created.
+    private func postCmdV() async -> Bool {
         guard let source = CGEventSource(stateID: .privateState) else {
             Log.error("paste_event_source_failed", category: .insertion)
-            return
+            return false
         }
         let v = PasteKeyResolver.vKeyCode()
         let cmd = CGKeyCode(kVK_Command)
@@ -248,6 +323,41 @@ final class PasteSimulator: TextInserting {
             event.post(tap: .cghidEventTap)
             try? await Task.sleep(for: KoeConstants.synthKeyInterval)
         }
+        return true
+    }
+
+    /// Path 2: deliver Cmd+V via `System Events` AppleScript (Design §6.2). Run
+    /// through `osascript` so the call is cancellable and bounded by the stage
+    /// timeout — a hung/blocked run is terminated and reported as a failure so
+    /// the chain advances. Returns whether the script exited cleanly (exit 0).
+    private func runAppleScriptPaste() async -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", "tell application \"System Events\" to keystroke \"v\" using command down"]
+        do {
+            try process.run()
+        } catch {
+            Log.error("paste_applescript_launch_failed", category: .insertion)
+            return false
+        }
+
+        // Terminate if the run overruns the per-stage timeout (e.g. a blocked
+        // Automation-permission prompt); same-actor capture of `process`.
+        let watchdog = Task { @MainActor in
+            try? await Task.sleep(for: KoeConstants.insertionStageTimeout)
+            if process.isRunning {
+                Log.error("paste_applescript_timeout", category: .insertion)
+                process.terminate()
+            }
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            process.terminationHandler = { _ in continuation.resume() }
+        }
+        watchdog.cancel()
+
+        let ok = process.terminationStatus == 0
+        if !ok { Log.event("paste_applescript_failed", category: .insertion, code: Int(process.terminationStatus)) }
+        return ok
     }
 
     // MARK: Verification
@@ -266,4 +376,26 @@ final class PasteSimulator: TextInserting {
         case .secureField: return 2
         }
     }
+
+    // MARK: QA
+
+    #if DEBUG
+    /// DEBUG-only QA entry: run the chain from a forced starting path, bypassing
+    /// the app-change guard (there's no recording app in QA) but still honoring
+    /// the secure-input block. Lets the owner exercise each path by hand before
+    /// the pipeline is wired end-to-end.
+    func debugInsert(_ text: String, forcing path: InsertionPath) async -> InsertResult {
+        guard beginInserting() else { return .clipboardFallback }
+        defer { isInserting = false }
+
+        let facts = context.preflightFacts(recordingBundleID: nil)
+        if case .blockedSecureInput(let reason) = InsertionPreflight.decide(facts) {
+            Log.event("insert_blocked_secure", category: .insertion, code: secureCode(reason))
+            return .blockedSecureInput
+        }
+        return await runPlan(
+            preferred: path, extraPreDelay: .zero, text: text, targetBundleID: facts.frontmostBundleID
+        )
+    }
+    #endif
 }
