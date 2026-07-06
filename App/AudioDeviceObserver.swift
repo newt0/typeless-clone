@@ -58,9 +58,14 @@ final class AudioDeviceObserver: @unchecked Sendable {
     private lazy var listenerBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
         // Dispatched on the main queue (see `queue`): refresh the cache, then
         // notify. `assumeIsolated` is sound because we are already on main.
+        // `nonisolated(unsafe)` opts this weak ref out of region-isolation
+        // tracking so the compiler doesn't treat entering the main-actor
+        // closure as "sending self" — safe because the block only ever runs on
+        // main and touches main-isolated state exclusively inside `assumeIsolated`.
+        nonisolated(unsafe) let observer = self
         MainActor.assumeIsolated {
-            self?.refresh()
-            self?.onChange?()
+            observer?.refresh()
+            observer?.onChange?()
         }
     }
 
