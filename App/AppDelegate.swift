@@ -16,21 +16,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // STT+format); constructed now so the DEBUG QA hook can drive it.
         let pasteSimulator = PasteSimulator()
         self.pasteSimulator = pasteSimulator
-        // DEBUG QA hook (M5-T2): the STT→format→paste pipeline isn't wired yet,
-        // so this delayed test paste lets the owner verify path 1 by hand.
-        // Click the menu item, then focus a target field within 2 seconds.
+        // DEBUG QA hooks (M5-T2/T3): the STT→format→paste pipeline isn't wired
+        // yet, so these delayed test pastes let the owner exercise each insertion
+        // path by hand. Click a menu item, then focus a target field within 2s.
         #if DEBUG
-        let onTestPaste: (() -> Void)? = {
-            Log.event("qa_test_paste_scheduled", category: .insertion)
-            Task { @MainActor in
-                try? await Task.sleep(for: .seconds(2))
-                _ = await pasteSimulator.performInsert("Koe paste test — こんにちは、世界。")
+        let sample = "Koe paste test — こんにちは、世界。"
+        func scheduledPaste(_ label: StaticString, _ body: @escaping @MainActor () async -> Void) -> () -> Void {
+            {
+                Log.event(label, category: .insertion)
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(2))
+                    await body()
+                }
             }
         }
+        let qaActions: [(title: String, run: () -> Void)] = [
+            ("QA: Insert Test Text — Path 1 (paste, 2s)", scheduledPaste("qa_paste_path1") {
+                _ = await pasteSimulator.debugInsert(sample, forcing: .paste)
+            }),
+            ("QA: Insert Test Text — Path 2 (AppleScript, 2s)", scheduledPaste("qa_paste_path2") {
+                _ = await pasteSimulator.debugInsert(sample, forcing: .appleScript)
+            }),
+            ("QA: Insert Test Text — Path 3 (clipboard only, 2s)", scheduledPaste("qa_paste_path3") {
+                _ = await pasteSimulator.debugInsert(sample, forcing: .clipboardOnly)
+            }),
+        ]
         #else
-        let onTestPaste: (() -> Void)? = nil
+        let qaActions: [(title: String, run: () -> Void)] = []
         #endif
-        let statusItemController = StatusItemController(onTestPaste: onTestPaste)
+        let statusItemController = StatusItemController(qaActions: qaActions)
         self.statusItemController = statusItemController
         Log.event("app_launched", category: .app)
 
