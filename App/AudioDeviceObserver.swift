@@ -35,7 +35,11 @@ final class AudioDeviceObserver: @unchecked Sendable {
     /// input node doesn't re-enumerate the HAL on the hotkey path.
     private var deviceIDsByUID: [String: AudioDeviceID] = [:]
 
-    private let queue = DispatchQueue(label: "dev.newt.Koe.audio-devices")
+    /// The HAL dispatches notifications here. Using the main queue means the
+    /// block runs on the main actor directly (no cross-domain `self` send that
+    /// Swift 6 region isolation rejects); device changes are rare, so the brief
+    /// on-main `refresh()` is fine.
+    private let queue = DispatchQueue.main
     private var listening = false
 
     // The two system properties whose changes matter: which device is the
@@ -52,12 +56,11 @@ final class AudioDeviceObserver: @unchecked Sendable {
     )
 
     private lazy var listenerBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-        // HAL callback thread → main actor: refresh the cache, then notify.
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated {
-                self?.refresh()
-                self?.onChange?()
-            }
+        // Dispatched on the main queue (see `queue`): refresh the cache, then
+        // notify. `assumeIsolated` is sound because we are already on main.
+        MainActor.assumeIsolated {
+            self?.refresh()
+            self?.onChange?()
         }
     }
 
