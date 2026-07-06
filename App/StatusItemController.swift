@@ -16,7 +16,12 @@ final class StatusItemController {
     /// working alt hotkey can't silently clear the ⚠︎ for a dead Fn path.
     private var permissionWarning = false
 
-    init() {
+    /// DEBUG-only QA action: triggers a delayed paste so the owner can verify
+    /// path 1 (M5-T2) before the STT→format→paste pipeline is wired end-to-end.
+    private let onTestPaste: (() -> Void)?
+
+    init(onTestPaste: (() -> Void)? = nil) {
+        self.onTestPaste = onTestPaste
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         applyIcon()
         statusItem.menu = buildMenu()
@@ -56,12 +61,30 @@ final class StatusItemController {
 
         menu.addItem(.separator())
         menu.addItem(withTitle: "Pause", action: nil, keyEquivalent: "") // placeholder
+
+        #if DEBUG
+        if onTestPaste != nil {
+            let test = menu.addItem(
+                withTitle: "Insert Test Text (QA, 2s delay)",
+                action: #selector(runTestPaste),
+                keyEquivalent: ""
+            )
+            test.target = self
+        }
+        #endif
+
         menu.addItem(.separator())
 
         let quit = menu.addItem(withTitle: "Quit Koe", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         return menu
     }
+
+    #if DEBUG
+    @objc private func runTestPaste() {
+        onTestPaste?()
+    }
+    #endif
 
     @objc private func openSettings() {
         NSApp.activate(ignoringOtherApps: true)
