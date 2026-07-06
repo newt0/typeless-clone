@@ -1,5 +1,20 @@
 # Decision log
 
+## 2026-07-05 (session 7 — M2-T2 liveness + alt hotkey)
+
+- **Liveness poll uses a `Task` sleep loop, not `Timer`.** Swift 6 marks `Timer.scheduledTimer`'s block `@Sendable`, which can't capture the `@MainActor` `FnHotkeyTap`; a `Task` created in the actor context inherits isolation and captures `self` cleanly. Interval `KoeConstants.tapLivenessInterval` (60s). The check maps `AXIsProcessTrusted()` × `CGEvent.tapIsEnabled` through the pure `TapLiveness.evaluate` → healthy / re-enable / revoked; revoked tears the tap down, resets the engine, and fires `onRevoked` (⚠︎). Full re-arm-after-re-grant guidance stays M11.
+- **Alt hotkey via KeyboardShortcuts, pinned `exactVersion: 3.0.1`** (added to `project.yml` packages, app-target only — not the KoeKit SwiftPM package). Default ⌥Space, remappable in Settings (M10). Uses Carbon `RegisterEventHotKey` → no Input Monitoring TCC and no Accessibility needed, so it works even while the Fn tap is untrusted. `AltHotkeyMonitor` drives the same `HotkeyEngine` (hold mode) as `FnHotkeyTap` for identical press/hold semantics.
+- **Both hotkeys active concurrently in P0.** Fn and ⌥Space are both registered; either drives a session. Making them mutually exclusive is a SettingsStore concern (M10) — deferred rather than hard-coding one.
+
+### M2-T2 code-review fixes (high, 6 confirmed)
+
+- **Status item is now a two-flag model (`recording` transient + `permissionWarning` latched), not a single tristate enum.** A shared `onStop`/`onStart` from the (Accessibility-free) alt hotkey was silently overwriting the ⚠︎ set by Fn-tap revocation. Recording is a transient overlay; the latched warning shows through again the moment recording stops, so a working alt hotkey can't hide a dead Fn path.
+- **Periodic liveness `.needsReenable` now resets the engine** (matching the immediate `tapDisabled*` handler) — a Fn key-up lost while the tap was silently disabled no longer leaves recording latched on for a full extra press cycle.
+- **Shared `HotkeyActivation` helper** replaces the duplicated start/stop+log switch that `FnHotkeyTap` and `AltHotkeyMonitor` each carried, so the two hotkeys can't drift in emitted events/analytics.
+- **`tapLivenessInterval` typed `Duration`** (was `TimeInterval`) to match every other tunable in `Constants.swift`; call site passes it straight to `Task.sleep(for:)`.
+- **`Package.resolved` untracked (was committed).** The single root file is shared by the KoeKit SwiftPM package (`swift test` → GRDB only) and the Koe.app Xcode target (`xcodebuild` → GRDB + KeyboardShortcuts); each rewrites it to a different superset/subset on every build, so no committed copy stays clean. Reproducibility is pinned in the manifests instead (GRDB in `Package.swift`, KeyboardShortcuts `exactVersion` in `project.yml`). Reverses the earlier "commit Package.resolved" choice now that a second toolchain resolves the same file.
+- **Stale `FnHotkeyTap` comments corrected**: the alt hotkey is a separate KeyboardShortcuts/Carbon path, not a future expansion of this tap's `flagsChanged` mask.
+
 ## 2026-07-05 (session 6 — M2-T1 Fn hotkey)
 
 - **Hotkey split: pure engine in KoeCore + CGEventTap in the app target** (mirrors the STT `WebSocketChannel` seam). `HotkeyEngine` (hold/toggle → start/stop, key-repeat/spurious-transition idempotent) and `FnKey` (keycode 63 + `maskSecondaryFn` → `.down`/`.up`) are pure and unit-tested (+20 tests); `App/FnHotkeyTap.swift` is the thin, untestable adapter that owns the real tap. Keeps activation semantics testable without synthesizing system events.

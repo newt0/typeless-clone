@@ -23,6 +23,14 @@ public enum KoeConstants {
     /// Max in-memory session audio kept for STT resend before recording stops.
     public static let maxSessionRecording: Duration = .seconds(20 * 60)
 
+    // MARK: Hotkey (Design §7.3)
+
+    /// How often the CGEventTap liveness check runs (tap validity +
+    /// `AXIsProcessTrusted()`). Belt-and-suspenders on top of the immediate
+    /// `tapDisabled*` re-enable, and the path that detects Accessibility
+    /// revocation.
+    public static let tapLivenessInterval: Duration = .seconds(60)
+
     // MARK: Formatting pipeline (Design §5.1)
 
     /// Transcripts longer than this (characters) are chunked and formatted in
