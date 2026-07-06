@@ -7,11 +7,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var altHotkey: AltHotkeyMonitor?
     private var audioEngine: AudioCaptureEngine?
     private var drainTask: Task<Void, Never>?
+    private var pasteSimulator: PasteSimulator?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Agent app: no Dock icon, no app switcher (paired with LSUIElement).
         NSApp.setActivationPolicy(.accessory)
-        let statusItemController = StatusItemController()
+        // Path 1 text insertion (M5-T2). Not yet wired into the pipeline (needs
+        // STT+format); constructed now so the DEBUG QA hook can drive it.
+        let pasteSimulator = PasteSimulator()
+        self.pasteSimulator = pasteSimulator
+        // DEBUG QA hook (M5-T2): the STT→format→paste pipeline isn't wired yet,
+        // so this delayed test paste lets the owner verify path 1 by hand.
+        // Click the menu item, then focus a target field within 2 seconds.
+        #if DEBUG
+        let onTestPaste: (() -> Void)? = {
+            Log.event("qa_test_paste_scheduled", category: .insertion)
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(2))
+                _ = await pasteSimulator.performInsert("Koe paste test — こんにちは、世界。")
+            }
+        }
+        #else
+        let onTestPaste: (() -> Void)? = nil
+        #endif
+        let statusItemController = StatusItemController(onTestPaste: onTestPaste)
         self.statusItemController = statusItemController
         Log.event("app_launched", category: .app)
 
