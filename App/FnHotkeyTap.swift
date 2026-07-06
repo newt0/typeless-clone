@@ -19,23 +19,34 @@ import KoeCore
 /// insertion + AX reads are all covered by Accessibility — Input Monitoring is
 /// never requested (Design §7.7).
 ///
-/// Liveness (`tapDisabled*` re-enable is stubbed here; the 60s verification
-/// timer + revocation → ⚠︎ re-guidance is M2-T2).
+/// Liveness (plan M2-T2): the callback re-enables the tap immediately on
+/// `tapDisabled*`; additionally a periodic check (``KoeConstants/tapLivenessInterval``)
+/// re-enables a silently-disabled tap and detects Accessibility revocation,
+/// tearing the tap down and firing ``onRevoked`` so the caller shows ⚠︎ +
+/// re-guidance (M11 refines the re-arm flow).
 @MainActor
 final class FnHotkeyTap {
     private var engine: HotkeyEngine
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private var livenessTask: Task<Void, Never>?
 
-    /// Invoked on recording start / stop. Called on the main run loop (the tap
-    /// source is installed there), so UI updates need no extra hop.
-    private let onStart: () -> Void
-    private let onStop: () -> Void
+    /// Recording start/stop glue, shared with ``AltHotkeyMonitor``. Fired on the
+    /// main run loop (the tap source is installed there), so UI needs no hop.
+    private let activation: HotkeyActivation
+    /// Invoked when the liveness check finds Accessibility was revoked (the tap
+    /// is torn down first). The caller surfaces the ⚠︎ warning state.
+    private let onRevoked: () -> Void
 
-    init(mode: HotkeyMode = .hold, onStart: @escaping () -> Void, onStop: @escaping () -> Void) {
+    init(
+        mode: HotkeyMode = .hold,
+        onStart: @escaping () -> Void,
+        onStop: @escaping () -> Void,
+        onRevoked: @escaping () -> Void = {}
+    ) {
         self.engine = HotkeyEngine(mode: mode)
-        self.onStart = onStart
-        self.onStop = onStop
+        self.activation = HotkeyActivation(onStart: onStart, onStop: onStop)
+        self.onRevoked = onRevoked
     }
 
     /// Create and enable the tap. Returns `false` (without crashing) when
@@ -46,10 +57,11 @@ final class FnHotkeyTap {
             return false
         }
 
-        // M2-T1 only consumes the Fn key, which arrives as `flagsChanged`.
-        // key-down/up (needed by the M2-T2 alt hotkey) are intentionally not
-        // subscribed yet, so we don't route every system-wide keystroke through
-        // this callback before anything uses them.
+        // This tap only ever handles the Fn key, which arrives as `flagsChanged`
+        // — so it subscribes to nothing else and doesn't route every system-wide
+        // keystroke through this callback. (The Fn-alternative hotkey is a
+        // wholly separate KeyboardShortcuts path in `AltHotkeyMonitor`, not an
+        // expansion of this mask.)
         let mask: CGEventMask = 1 << CGEventType.flagsChanged.rawValue
 
         guard let tap = CGEvent.tapCreate(
@@ -69,6 +81,7 @@ final class FnHotkeyTap {
         self.runLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        startLivenessMonitor()
         Log.event("hotkey_tap_started", category: .hotkey)
         return true
     }
@@ -77,6 +90,8 @@ final class FnHotkeyTap {
     /// `AppDelegate`, so there is no `deinit` teardown — the single instance
     /// never outlives the process.
     func stop() {
+        livenessTask?.cancel()
+        livenessTask = nil
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
@@ -85,19 +100,55 @@ final class FnHotkeyTap {
         tap = nil
     }
 
+    // MARK: Liveness
+
+    /// Poll tap validity + Accessibility on an interval. A `Task` (not a
+    /// `Timer`) so the loop inherits this actor's isolation — `Timer`'s
+    /// `@Sendable` block can't capture the `@MainActor` `self`.
+    private func startLivenessMonitor() {
+        livenessTask?.cancel()
+        livenessTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: KoeConstants.tapLivenessInterval)
+                guard !Task.isCancelled, let self else { return }
+                self.checkLiveness()
+            }
+        }
+    }
+
+    private func checkLiveness() {
+        let enabled = tap.map { CGEvent.tapIsEnabled(tap: $0) } ?? false
+        switch TapLiveness.evaluate(trusted: AXIsProcessTrusted(), tapEnabled: enabled) {
+        case .healthy:
+            break
+        case .needsReenable:
+            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            // Events (incl. a Fn key-up) were dropped while disabled, so the
+            // engine may be latched active — resync like the callback path does.
+            activation.apply(engine.reset())
+            Log.event("hotkey_tap_reenabled", category: .hotkey)
+        case .revoked:
+            // Drop any in-flight recording, tear down, and let the caller warn.
+            Log.event("hotkey_ax_revoked", category: .permission)
+            activation.apply(engine.reset())
+            stop()
+            onRevoked()
+        }
+    }
+
     /// Called by the C trampoline (already hopped onto the main actor). Returns
     /// `nil` to consume the event, or the passed event to let it through.
     fileprivate func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
-            // Immediate self-heal so the tap does not silently die; the periodic
-            // verification timer + revocation handling arrives in M2-T2.
+            // Immediate self-heal so the tap does not silently die (the periodic
+            // liveness check is the backstop for disables we never see here).
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             // A key-up during the disabled window is lost (the tap wasn't
             // listening), so the engine may be latched active — reset it (emits
             // .stop if so) to resync with the physical key rather than leaving
             // recording stuck on.
-            dispatch(engine.reset())
+            activation.apply(engine.reset())
             Log.event("hotkey_tap_reenabled", category: .hotkey)
             return nil
 
@@ -108,26 +159,14 @@ final class FnHotkeyTap {
                 // A different modifier (Shift/Cmd/…) — never Koe's business.
                 return Unmanaged.passUnretained(event)
             }
-            dispatch(engine.handle(transition))
+            activation.apply(engine.handle(transition))
             // Consume Fn to suppress the system globe-key action (Design §7.3).
             return nil
 
         default:
-            // key-down/up flow through; the alt hotkey binding is M2-T2.
+            // The mask only requests flagsChanged; anything else is unexpected —
+            // pass it through untouched.
             return Unmanaged.passUnretained(event)
-        }
-    }
-
-    private func dispatch(_ action: HotkeyAction) {
-        switch action {
-        case .start:
-            Log.event("hotkey_recording_start", category: .hotkey)
-            onStart()
-        case .stop:
-            Log.event("hotkey_recording_stop", category: .hotkey)
-            onStop()
-        case .none:
-            break
         }
     }
 }

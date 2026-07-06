@@ -8,12 +8,13 @@ import KoeCore
 /// placeholders until M7 and the pause feature land.
 @MainActor
 final class StatusItemController {
-    enum Status {
-        case normal, recording, warning
-    }
-
     private let statusItem: NSStatusItem
-    private var status: Status = .normal
+    /// Transient: true only while a dictation is being recorded.
+    private var recording = false
+    /// Latched: a permission problem (Accessibility not granted / revoked) that
+    /// persists across recording toggles. Kept separate from `recording` so a
+    /// working alt hotkey can't silently clear the ⚠︎ for a dead Fn path.
+    private var permissionWarning = false
 
     init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -21,18 +22,27 @@ final class StatusItemController {
         statusItem.menu = buildMenu()
     }
 
-    func setStatus(_ status: Status) {
-        self.status = status
+    func setRecording(_ active: Bool) {
+        recording = active
+        applyIcon()
+    }
+
+    func setPermissionWarning(_ on: Bool) {
+        permissionWarning = on
         applyIcon()
     }
 
     private func applyIcon() {
         guard let button = statusItem.button else { return }
+        // Recording is the transient overlay; the latched ⚠︎ shows through again
+        // as soon as recording stops.
         let symbol: String
-        switch status {
-        case .normal: symbol = "mic"
-        case .recording: symbol = "mic.fill"
-        case .warning: symbol = "exclamationmark.triangle"
+        if recording {
+            symbol = "mic.fill"
+        } else if permissionWarning {
+            symbol = "exclamationmark.triangle"
+        } else {
+            symbol = "mic"
         }
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Koe")
     }

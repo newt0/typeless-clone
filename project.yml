@@ -13,6 +13,11 @@ options:
 packages:
   KoeKit:
     path: .
+  # Fn-alternative global hotkey (⌥Space, remappable). Carbon RegisterEventHotKey
+  # under the hood — no Input Monitoring TCC. Pinned (Design M0-T1).
+  KeyboardShortcuts:
+    url: https://github.com/sindresorhus/KeyboardShortcuts
+    exactVersion: "3.0.1"
 
 targets:
   Koe:
@@ -23,6 +28,7 @@ targets:
     dependencies:
       - package: KoeKit
         product: KoeCore
+      - package: KeyboardShortcuts
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.newt.Koe
