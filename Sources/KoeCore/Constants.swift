@@ -23,6 +23,13 @@ public enum KoeConstants {
     /// Max in-memory session audio kept for STT resend before recording stops.
     public static let maxSessionRecording: Duration = .seconds(20 * 60)
 
+    // MARK: Audio capture (Design §7.4)
+
+    /// Target duration of each PCM16 chunk streamed to STT. 20–50ms keeps
+    /// key-up→final latency low without flooding the socket; the input tap is
+    /// sized from this (`AudioFormatSpec/frameCount(for:atSampleRate:)`).
+    public static let audioChunkDuration: Duration = .milliseconds(40)
+
     // MARK: Hotkey (Design §7.3)
 
     /// How often the CGEventTap liveness check runs (tap validity +

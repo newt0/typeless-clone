@@ -40,13 +40,16 @@ Speechmatics STT アダプタ（M4）が入りました。実 API との疎通�
 次は M2（ホットキー）→ M3（マイク音声）→ 垂直スライスに進みます。ここは **実機で権限ダイアログを承認する**あなたの操作が必須です。
 
 - **アプリを起動して権限を許可**（Claude が実装後に依頼します）:
+
   ```
   brew install xcodegen        # 未導入なら一度だけ
   xcodegen generate            # project.yml 変更後に再生成
   open Koe.xcodeproj           # Xcode で Run、または built Koe.app を open
   ```
+
   - **マイク**（M3）と **アクセシビリティ**（M2 ホットキー / M5 貼り付け）の許可ダイアログで「許可」。
   - ※ Input Monitoring は要求しません（設計方針）。
+
 - 各マイルストーン完了時、Claude が **日本語のQAチェックリスト**を提示します（実際にしゃべって挿入されるか等）。それを実施して合否を返す。
 
 ---

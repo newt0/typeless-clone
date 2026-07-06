@@ -1,5 +1,15 @@
 # Decision log
 
+## 2026-07-06 (session 8 — M3-T1 audio engine + buffer)
+
+- **Pure/adapter split for audio.** `AudioFormatSpec` (16kHz/mono/PCM16 wire numbers + chunk-frame/byte-budget math) and `SessionAudioBuffer` (in-memory session audio, 20-min/≈38MB cap → truncate-and-signal `.capReached`) live in `KoeCore` and are unit-tested (+12); the untestable `AVAudioEngine`/`AVAudioConverter` glue is `App/AudioCaptureEngine.swift`, mirroring the `HotkeyEngine`/`FnHotkeyTap` pattern. Non-Sendable AVFoundation state is isolated in a private `TapState` (`@unchecked Sendable`) only ever touched on CoreAudio's serialized tap thread.
+- **`AudioConverter` fed one tap buffer per callback** (`.haveData` once, then `.noDataNow`); output capacity sized by sample-rate ratio. Raw audio only — no client NR/AGC (invariant 8). Chunk cadence ~40ms (`KoeConstants.audioChunkDuration`), the tap `bufferSize` a hint CoreAudio may not honour exactly.
+
+### M3-T1 code-review fixes (high, 2 confirmed)
+
+- **`AudioCaptureEngine.start()` returns `ChunkStream?`, not a stub finished stream.** `nil` on both start-failure (bad input format / converter init / `engine.start()` throw — e.g. mic TCC not granted) and already-recording. AppDelegate flips the icon to "recording" and (re)arms the drain task only on a non-nil return, so (a) a failed start can't leave the icon lying "recording" while zero audio is captured (invariant 1), and (b) a second hotkey firing mid-hold no longer cancels the live drain task and orphans the still-fed real stream (unbounded buffering).
+- **Cross-hotkey teardown (Fn held + a stray ⌥Space tap fires the shared `onStop`) stays a known limitation of the QA wiring**, consistent with the logged "both hotkeys active concurrently in P0" stance — the real fix is `SessionCoordinator` owning session lifecycle (wired in M4/M5), not source-ownership bookkeeping in throwaway AppDelegate glue.
+
 ## 2026-07-05 (session 7 — M2-T2 liveness + alt hotkey)
 
 - **Liveness poll uses a `Task` sleep loop, not `Timer`.** Swift 6 marks `Timer.scheduledTimer`'s block `@Sendable`, which can't capture the `@MainActor` `FnHotkeyTap`; a `Task` created in the actor context inherits isolation and captures `self` cleanly. Interval `KoeConstants.tapLivenessInterval` (60s). The check maps `AXIsProcessTrusted()` × `CGEvent.tapIsEnabled` through the pure `TapLiveness.evaluate` → healthy / re-enable / revoked; revoked tears the tap down, resets the engine, and fires `onRevoked` (⚠︎). Full re-arm-after-re-grant guidance stays M11.
