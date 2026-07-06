@@ -10,19 +10,30 @@ import KoeCore
 /// reasons about, resolves a device UID back to the `AudioDeviceID` the capture
 /// engine needs to pin the input node, and fires `onChange` whenever the default
 /// input device or the device set changes (AirPods connect/disconnect, a USB mic
-/// unplugged). The engine reacts by re-selecting and, if needed, switching mid
-/// session without stopping the dictation.
+/// unplugged).
 ///
-/// The HAL listener block runs on a private serial queue and hops to the main
-/// actor to invoke `onChange`. `@unchecked Sendable` is the escape hatch that
-/// lets that block weak-capture the observer under Swift 6 strict concurrency;
-/// it is sound because the mutable state (`listening`, `onChange`) is only ever
+/// The device list is **cached** and refreshed only when the HAL signals a
+/// change (or at ``start()``), so the hotkey-press path reads it in memory
+/// rather than paying a burst of synchronous `AudioObjectGetPropertyData`
+/// round-trips inside the FR-01 ≤200ms press→recording budget.
+///
+/// `@unchecked Sendable` is the escape hatch that lets the HAL listener block
+/// weak-capture the observer under Swift 6 strict concurrency; it is sound
+/// because all mutable state (`onChange`, the cache, `listening`) is only ever
 /// touched on the main actor — the block reaches it exclusively inside
-/// `MainActor.assumeIsolated`.
+/// `MainActor.assumeIsolated`, matching the `FnHotkeyTap` pattern.
 final class AudioDeviceObserver: @unchecked Sendable {
-    /// Fired on the main actor when the default input or the device set changes.
-    /// The engine re-queries ``snapshot()`` in response.
+    /// Fired on the main actor after the cache is refreshed, when the default
+    /// input or the device set changes. The engine reconsiders the route here.
     var onChange: (@MainActor () -> Void)?
+
+    /// Cached input devices and the current system default, refreshed on HAL
+    /// change. Read synchronously (no HAL) on the hotkey path.
+    private(set) var available: [AudioInputDevice] = []
+    private(set) var systemDefault: AudioInputDevice?
+    /// UID → live `AudioDeviceID`, cached alongside ``available`` so pinning the
+    /// input node doesn't re-enumerate the HAL on the hotkey path.
+    private var deviceIDsByUID: [String: AudioDeviceID] = [:]
 
     private let queue = DispatchQueue(label: "dev.newt.Koe.audio-devices")
     private var listening = false
@@ -41,17 +52,22 @@ final class AudioDeviceObserver: @unchecked Sendable {
     )
 
     private lazy var listenerBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-        // HAL callback thread → main actor; coalesced naturally by the engine
-        // re-querying the current snapshot rather than trusting the event.
+        // HAL callback thread → main actor: refresh the cache, then notify.
         DispatchQueue.main.async {
-            MainActor.assumeIsolated { self?.onChange?() }
+            MainActor.assumeIsolated {
+                self?.refresh()
+                self?.onChange?()
+            }
         }
     }
 
-    /// Begin watching. Idempotent.
+    /// Begin watching and warm the cache. Idempotent. Call once, before the
+    /// first recording, so ``snapshot()`` is populated on the hotkey path.
+    @MainActor
     func start() {
         guard !listening else { return }
         listening = true
+        refresh()
         let system = AudioObjectID(kAudioObjectSystemObject)
         AudioObjectAddPropertyListenerBlock(system, &defaultInputAddress, queue, listenerBlock)
         AudioObjectAddPropertyListenerBlock(system, &deviceListAddress, queue, listenerBlock)
@@ -66,20 +82,37 @@ final class AudioDeviceObserver: @unchecked Sendable {
 
     // MARK: - Snapshot
 
-    /// The current input devices plus which one is the system default, in the
-    /// pure form the selector consumes.
+    /// The cached input devices plus which one is the system default, in the
+    /// pure form the selector consumes. No HAL I/O.
+    @MainActor
     func snapshot() -> (available: [AudioInputDevice], systemDefault: AudioInputDevice?) {
-        let ids = allDeviceIDs().filter { hasInputStreams($0) }
-        let available = ids.compactMap(makeDevice)
-        let defaultID = defaultInputDeviceID()
-        let systemDefault = defaultID.flatMap { id in available.first { $0.id == uid(of: id) } }
-        return (available, systemDefault)
+        (available, systemDefault)
     }
 
-    /// Resolve a device UID back to its live `AudioDeviceID` for pinning the
-    /// capture engine's input node. `nil` if the device has since vanished.
+    /// Resolve a device UID to its live `AudioDeviceID` for pinning the capture
+    /// engine's input node, from the cache. `nil` if the device has vanished.
+    @MainActor
     func audioDeviceID(forUID target: String) -> AudioDeviceID? {
-        allDeviceIDs().first { uid(of: $0) == target }
+        deviceIDsByUID[target]
+    }
+
+    /// Re-enumerate the HAL and rebuild the cache. Main-actor only.
+    @MainActor
+    func refresh() {
+        let ids = allDeviceIDs().filter { hasInputStreams($0) }
+        var devices: [AudioInputDevice] = []
+        var map: [String: AudioDeviceID] = [:]
+        for id in ids {
+            guard let device = makeDevice(id) else { continue }
+            devices.append(device)
+            map[device.id] = id
+        }
+        // Match the default by its AudioDeviceID against the map we just built —
+        // no second UID round-trip for the default device.
+        let defaultID = defaultInputDeviceID()
+        available = devices
+        deviceIDsByUID = map
+        systemDefault = defaultID.flatMap { d in devices.first { map[$0.id] == d } }
     }
 
     // MARK: - HAL reads

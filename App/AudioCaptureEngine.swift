@@ -18,9 +18,10 @@ import KoeCore
 /// default-input route (``AudioDeviceObserver``) and the AVAudioEngine
 /// configuration. When the recorded device disappears (AirPods drop) it re-pins
 /// the best remaining device and reinstalls the tap **on the same session** —
-/// the ``SessionAudioBuffer`` and chunk stream survive, so the transcript covers
-/// audio from before and after the switch (invariant 1). The caller is notified
-/// so the HUD (M9) can flash the switch.
+/// the accumulated ``SessionAudioBuffer`` is carried into a fresh ``TapState``
+/// and the chunk stream is untouched, so the transcript covers audio from before
+/// and after the switch (invariant 1). The caller is notified so the HUD (M9)
+/// can flash the switch — but only when the pin actually took effect.
 ///
 /// The recording window runs under `ProcessInfo.beginActivity(.userInitiated)`
 /// so App Nap can't stall capture→insertion.
@@ -28,7 +29,7 @@ import KoeCore
 /// Concurrency: the tap block fires on CoreAudio's realtime thread, which
 /// serializes callbacks; the non-Sendable AVFoundation objects live in
 /// ``TapState`` and are only touched there. ``start()``/``stop()`` and the
-/// route-change handler run on the main actor and only mutate the tap while the
+/// route-change handler run on the main actor and only rebuild the tap while the
 /// engine is stopped, so they never race the tap thread.
 @MainActor
 final class AudioCaptureEngine {
@@ -47,15 +48,17 @@ final class AudioCaptureEngine {
     private var continuation: ChunkStream.Continuation?
     private var tapState: TapState?
     /// The device capture is currently pinned to; drives the switch decision.
+    /// `nil` when a pin failed and we fell back to whatever device the engine
+    /// resolved — so a later switch is re-evaluated rather than suppressed.
     private var currentDevice: AudioInputDevice?
-    private var configChangeObserver: NSObjectProtocol?
     private var isRecording = false
 
     /// Fired on the main actor when the 20-minute session cap stops recording;
     /// the caller shows the HUD notice.
     private let onCapReached: () -> Void
-    /// Fired on the main actor after a mid-session device switch, with the
-    /// device now in use; the caller flashes the HUD switch notice (M9).
+    /// Fired on the main actor after a mid-session device switch actually took
+    /// effect, with the device now in use; the caller flashes the HUD switch
+    /// notice (M9).
     private let onDeviceSwitched: (AudioInputDevice) -> Void
 
     init(
@@ -69,6 +72,22 @@ final class AudioCaptureEngine {
         self.onCapReached = onCapReached
         self.onDeviceSwitched = onDeviceSwitched
         engine.prepare()
+
+        // Warm the device cache and start listening now (not at first record),
+        // so the hotkey path reads devices in memory and a route change is
+        // reconciled even between recordings. `onChange` is guarded by
+        // `isRecording`, so ticks while idle only keep the cache fresh.
+        deviceObserver.onChange = { [weak self] in self?.handleRouteChange() }
+        deviceObserver.start()
+        // AVAudioEngine posts this when the hardware format changes out from
+        // under it (e.g. the pinned device vanished); reconcile the same way.
+        // Registered for the engine's (app) lifetime; the handler guards on
+        // `isRecording`.
+        NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handleRouteChange() }
+        }
     }
 
     /// Begin capture and return the live chunk stream, or `nil` when capture did
@@ -89,14 +108,16 @@ final class AudioCaptureEngine {
         }
 
         // Pick and pin the input device before reading the input format — pinning
-        // changes which hardware the input node reflects.
+        // changes which hardware the input node reflects; `reset()` forces the
+        // node to re-read the newly-pinned device's native format.
         let snapshot = deviceObserver.snapshot()
         let selected = InputDeviceSelector.select(
             from: snapshot.available,
             systemDefault: snapshot.systemDefault,
             preferBuiltIn: preferBuiltIn()
         )
-        pin(selected)
+        let pinned = pin(selected)
+        engine.reset()
 
         let inputFormat = engine.inputNode.inputFormat(forBus: 0)
         guard
@@ -148,8 +169,9 @@ final class AudioCaptureEngine {
         }
 
         isRecording = true
-        currentDevice = selected
-        startWatchingRoute()
+        // Track the device we actually landed on: `selected` if the pin took,
+        // else the OS default the engine fell back to (may be nil).
+        currentDevice = pinned ? selected : snapshot.systemDefault
         Log.event("audio_recording_started", category: .audio)
         return stream
     }
@@ -171,20 +193,6 @@ final class AudioCaptureEngine {
 
     // MARK: - Device-switch survival (M3-T2)
 
-    /// Start reacting to default-input and engine-configuration changes for the
-    /// duration of this recording.
-    private func startWatchingRoute() {
-        deviceObserver.onChange = { [weak self] in self?.handleRouteChange() }
-        deviceObserver.start()
-        // AVAudioEngine posts this when the hardware format changes out from under
-        // it (e.g. the pinned device vanished); reconcile the same way.
-        configChangeObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.handleRouteChange() }
-        }
-    }
-
     /// The default-input route or device set changed. Re-select and, if a
     /// different device wins, rebind capture to it without dropping the session.
     private func handleRouteChange() {
@@ -198,25 +206,36 @@ final class AudioCaptureEngine {
         )
         guard case let .switchTo(target) = decision else { return }
 
-        // Reconfigure while the engine is stopped so we never mutate the tap
-        // under a live realtime callback. Buffer + continuation live in `state`
-        // and survive — the transcript spans both devices.
+        // Reconfigure while the engine is stopped so no tap callback is in
+        // flight when we swap. The accumulated audio is carried into a fresh
+        // TapState (converter stays immutable — no cross-thread mutation), and
+        // the continuation is reused, so the session spans both devices.
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
-        pin(target)
+        let pinned = pin(target)
+        engine.reset()
 
         let inputFormat = engine.inputNode.inputFormat(forBus: 0)
         guard
             inputFormat.channelCount > 0,
-            let converter = AVAudioConverter(from: inputFormat, to: state.outputFormat)
+            let converter = AVAudioConverter(from: inputFormat, to: state.outputFormat),
+            let continuation
         else {
             Log.error("audio_device_switch_converter_failed", category: .audio)
             teardown()
             onCapReached() // reuse the "recording ended unexpectedly" icon reset
             return
         }
-        state.rebind(converter: converter)
-        installTap(inputFormat: inputFormat, state: state)
+
+        let next = TapState(
+            converter: converter,
+            outputFormat: state.outputFormat,
+            buffer: state.carryOverBuffer(),
+            onChunk: { continuation.yield($0) },
+            onCap: { [weak self] in Task { @MainActor in self?.handleCapReached() } }
+        )
+        self.tapState = next
+        installTap(inputFormat: inputFormat, state: next)
 
         do {
             try engine.start()
@@ -227,20 +246,31 @@ final class AudioCaptureEngine {
             return
         }
 
-        currentDevice = target
-        Log.event("audio_device_switched", category: .audio)
-        onDeviceSwitched(target)
+        if pinned {
+            currentDevice = target
+            Log.event("audio_device_switched", category: .audio)
+            onDeviceSwitched(target)
+        } else {
+            // Capture continues (invariant 1: no session drop), but we did not
+            // land on `target` — record the OS fallback and don't claim a switch.
+            currentDevice = snapshot.systemDefault
+            Log.error("audio_device_switch_pin_failed", category: .audio)
+        }
     }
 
     /// Pin the input node's HAL device so macOS does not silently follow the
     /// system default away from our selection (e.g. onto a freshly-connected
-    /// Bluetooth headset). No-op if the device vanished before we could pin.
-    private func pin(_ device: AudioInputDevice?) {
+    /// Bluetooth headset). Returns whether the pin took effect; the caller must
+    /// not report a switch it couldn't perform.
+    private func pin(_ device: AudioInputDevice?) -> Bool {
         guard
             let device,
             let deviceID = deviceObserver.audioDeviceID(forUID: device.id),
             let unit = engine.inputNode.audioUnit
-        else { return }
+        else {
+            Log.error("audio_device_pin_unavailable", category: .audio)
+            return false
+        }
         var id = deviceID
         let status = AudioUnitSetProperty(
             unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
@@ -248,7 +278,9 @@ final class AudioCaptureEngine {
         )
         if status != noErr {
             Log.error("audio_device_pin_failed", category: .audio, code: Int(status))
+            return false
         }
+        return true
     }
 
     // MARK: - Tap plumbing
@@ -267,21 +299,12 @@ final class AudioCaptureEngine {
     private func teardown() {
         isRecording = false
         currentDevice = nil
-        stopWatchingRoute()
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         tapState = nil
         continuation?.finish()
         continuation = nil
         endActivity()
-    }
-
-    private func stopWatchingRoute() {
-        deviceObserver.onChange = nil
-        if let configChangeObserver {
-            NotificationCenter.default.removeObserver(configChangeObserver)
-            self.configChangeObserver = nil
-        }
     }
 
     private func endActivity() {
@@ -295,10 +318,12 @@ final class AudioCaptureEngine {
 /// Holds the non-Sendable AVFoundation conversion state. Every method runs on
 /// CoreAudio's realtime tap thread (which serializes callbacks), so the
 /// `@unchecked Sendable` escape hatch is sound — the object is never touched
-/// from two threads at once. The one exception is ``rebind(converter:)``, called
-/// from the main actor only while the engine (and thus the tap) is stopped.
+/// from two threads at once. All stored state is immutable or tap-thread-local;
+/// a device switch builds a *new* TapState (carrying the buffer over) rather
+/// than mutating this one, and ``carryOverBuffer()`` is read on the main actor
+/// only after the engine — and thus the tap — has been stopped.
 private final class TapState: @unchecked Sendable {
-    private var converter: AVAudioConverter
+    private let converter: AVAudioConverter
     let outputFormat: AVAudioFormat
     private var buffer: SessionAudioBuffer
     private let onChunk: @Sendable (Data) -> Void
@@ -306,7 +331,7 @@ private final class TapState: @unchecked Sendable {
 
     private let clock = ContinuousClock()
     private let started: ContinuousClock.Instant
-    private var firstChunkLogged = false
+    private var firstChunkLogged: Bool
     private var capped = false
 
     init(
@@ -322,14 +347,15 @@ private final class TapState: @unchecked Sendable {
         self.onChunk = onChunk
         self.onCap = onCap
         self.started = clock.now
+        // A carried-over buffer means we already logged first-buffer latency for
+        // this session; don't re-log it after a device switch.
+        self.firstChunkLogged = !buffer.data.isEmpty
     }
 
-    /// Swap in a converter for a new input device, keeping the accumulated
-    /// ``buffer`` and the output format. Safe because the caller has stopped the
-    /// engine, so no tap callback is in flight.
-    func rebind(converter: AVAudioConverter) {
-        self.converter = converter
-    }
+    /// The accumulated session audio, for the successor TapState after a device
+    /// switch. Safe to read on the main actor because the caller has stopped the
+    /// engine (and removed the tap) first, so no tap callback is in flight.
+    func carryOverBuffer() -> SessionAudioBuffer { buffer }
 
     func process(_ input: AVAudioPCMBuffer) {
         guard !capped, input.frameLength > 0 else { return }

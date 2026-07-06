@@ -27,7 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the HUD switch notice lands in M9 — for now capture continues silently
         // and the engine logs `audio_device_switched`.
         let audioEngine = AudioCaptureEngine(
-            preferBuiltIn: { UserDefaults.standard.object(forKey: "preferBuiltInMic") as? Bool ?? true },
+            preferBuiltIn: { UserDefaults.standard.object(forKey: AppDefaultsKey.preferBuiltInMic) as? Bool ?? true },
             onCapReached: { statusItemController.setRecording(false) },
             onDeviceSwitched: { _ in /* M9 HUD switch notice */ }
         )
