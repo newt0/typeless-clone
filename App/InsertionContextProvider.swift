@@ -15,6 +15,23 @@ import KoeCore
 /// doesn't depend on the AX tree).
 @MainActor
 final class InsertionContextProvider: ContextProviding {
+    /// Single system-wide element, reused across every focused-element fetch
+    /// (this is a per-utterance hot path — no need to recreate it per read).
+    private let systemWide = AXUIElementCreateSystemWide()
+
+    init() {
+        // Bound synchronous AX reads: an unresponsive target app must not hang
+        // the main actor for the ~6s system default. Setting the timeout on the
+        // system-wide element makes it the process-wide default for all AX
+        // messaging; a timed-out read yields nil, which callers already treat
+        // as "AX unreadable → proceed optimistically". See
+        // ``KoeConstants/axReadTimeout`` for why the bound is generous.
+        AXUIElementSetMessagingTimeout(
+            systemWide,
+            Float(KoeConstants.axReadTimeout / .seconds(1))
+        )
+    }
+
     /// `ContextProviding` seam used by the coordinator to capture the bundle id
     /// at recording start. Delegates to the sync read so both paths agree.
     func frontmostBundleID() async -> String? {
@@ -71,7 +88,6 @@ final class InsertionContextProvider: ContextProviding {
     /// The system-wide focused UI element, or nil when AX is unreadable. Single
     /// source of the "get the focused AXUIElement" dance for every caller here.
     private func focusedElement() -> AXUIElement? {
-        let systemWide = AXUIElementCreateSystemWide()
         var focusedRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
                 systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef
