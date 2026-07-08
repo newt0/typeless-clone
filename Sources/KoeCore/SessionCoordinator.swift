@@ -43,9 +43,17 @@ public actor SessionCoordinator {
         self.logger = logger
     }
 
-    /// Begin one utterance. Reserves the FIFO ticket synchronously (in call
-    /// order) and returns a running task for the rest of the pipeline, so
-    /// callers preserve press order while pipelines overlap.
+    /// Begin one utterance. Reserves the FIFO ticket, then returns a running
+    /// task for the rest of the pipeline so pipelines overlap while insertion
+    /// stays serialized.
+    ///
+    /// Ordering contract: the ticket reservation crosses an actor hop, so press
+    /// order maps to ticket order only if the caller `await`s each
+    /// `startUtterance()` before starting the next. A serial main-actor hotkey
+    /// flow that awaits per press satisfies this; firing unawaited
+    /// `Task { startUtterance() }`s per press would NOT (two such tasks may
+    /// reach the serializer in either order). See the pipeline-wiring note in
+    /// STATUS.md.
     @discardableResult
     public func startUtterance() async -> Task<DictationOutcome, Never> {
         let context = UtteranceContext(index: await serializer.reserve())
