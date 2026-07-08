@@ -212,14 +212,28 @@ final class PasteSimulator: TextInserting {
             return .advance
         }
 
-        try? await Task.sleep(for: KoeConstants.pastePreDelay + extraPreDelay)
+        // A cancelled pre-delay must not post the keystroke: the clipboard write
+        // may not have propagated yet and the target would paste stale content.
+        // Advance instead — the payload stays for the next path, ultimately the
+        // clipboard landing (which posts no keystroke).
+        do {
+            try await Task.sleep(for: KoeConstants.pastePreDelay + extraPreDelay)
+        } catch {
+            return .advance
+        }
         // Couldn't deliver the keystroke → advance, leaving the payload for the
         // next path.
         guard await post() else { return .advance }
 
         // The restore wait doubles as the settle window that lets the paste land
         // before the best-effort AX verification reads the focused element.
-        try? await Task.sleep(for: KoeConstants.clipboardRestoreWait)
+        // The keystroke is already out, so the settle/verify/restore choreography
+        // must finish even if this Task is cancelled — the unstructured child
+        // shields the sleep from cancellation. Aborting early would either
+        // restore before the target reads the clipboard (pasting the OLD
+        // content) or skip the restore entirely (permanently clobbering the
+        // user's clipboard).
+        await Task { try? await Task.sleep(for: KoeConstants.clipboardRestoreWait) }.value
         if verify(insertedText: text) == .verifiedFailed {
             // Explicit failure → next path. Do NOT restore (restoring would drop
             // the text the paste failed to insert); the marked payload stays.
@@ -334,12 +348,6 @@ final class PasteSimulator: TextInserting {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", "tell application \"System Events\" to keystroke \"v\" using command down"]
-        do {
-            try process.run()
-        } catch {
-            Log.error("paste_applescript_launch_failed", category: .insertion)
-            return false
-        }
 
         // Terminate if the run overruns the per-stage timeout (e.g. a blocked
         // Automation-permission prompt); same-actor capture of `process`.
@@ -350,10 +358,23 @@ final class PasteSimulator: TextInserting {
                 process.terminate()
             }
         }
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            process.terminationHandler = { _ in continuation.resume() }
+        // The handler must be installed BEFORE run(): a handler assigned after
+        // the process already exited is never invoked, which would leave this
+        // continuation suspended forever and stall the insertion FIFO.
+        let launched = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            process.terminationHandler = { _ in continuation.resume(returning: true) }
+            do {
+                try process.run()
+            } catch {
+                process.terminationHandler = nil
+                continuation.resume(returning: false)
+            }
         }
         watchdog.cancel()
+        guard launched else {
+            Log.error("paste_applescript_launch_failed", category: .insertion)
+            return false
+        }
 
         let ok = process.terminationStatus == 0
         if !ok { Log.event("paste_applescript_failed", category: .insertion, code: Int(process.terminationStatus)) }

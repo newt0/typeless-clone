@@ -14,6 +14,15 @@ public enum KoeConstants {
     public static let clipboardRestoreWait: Duration = .milliseconds(300)
     /// Interval between synthesized key events in the Cmd+V sequence.
     public static let synthKeyInterval: Duration = .milliseconds(10)
+    /// Upper bound for one synchronous AX read (preflight / paste verification).
+    /// The system default (~6s) would hang the main actor on an unresponsive
+    /// target app; a timed-out read takes the existing "AX unreadable" path.
+    /// Deliberately generous — NOT the insertion latency budget: timed-out
+    /// secure-field/verify reads fail *open* (proceed / assume success), so this
+    /// bound only exists to convert multi-second hangs into the nil path. Apps
+    /// that are merely slow (heavy Electron ~400ms) must still be read, or the
+    /// invariant-3 secure guard and invariant-1 verify net silently weaken.
+    public static let axReadTimeout: Duration = .seconds(1)
 
     // MARK: Session control (Design §7.2)
 
