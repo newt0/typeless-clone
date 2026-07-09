@@ -41,6 +41,13 @@ final class HUDPanelController {
 
     // MARK: Entry points (any isolation → main actor)
 
+    /// M4-T3 retry button action (set once by AppDelegate after the pipeline
+    /// is assembled).
+    var onRetry: ((RecoveryHandle) -> Void)? {
+        get { store.onRetry }
+        set { store.onRetry = newValue }
+    }
+
     /// Engine-side notices (device switch, session cap).
     nonisolated func notify(_ notice: HUDNotice) {
         Task { @MainActor in self.apply(.notice(notice)) }
@@ -90,6 +97,14 @@ final class HUDPanelController {
             if panel.isVisible { panel.orderOut(nil) }
             return
         }
+        // The panel is click-through except when it actually offers a button
+        // (M4-T3 retry) — mouse transparency is the default so the HUD can
+        // never intercept clicks meant for the app under it.
+        if case .failed(let recovery) = model.phase, recovery != nil {
+            panel.ignoresMouseEvents = false
+        } else {
+            panel.ignoresMouseEvents = true
+        }
         let size = panel.contentView?.fittingSize ?? NSSize(width: 320, height: 44)
         if panel.frame.size != size {
             panel.setContentSize(size)
@@ -134,7 +149,7 @@ extension HUDPanelController: DictationUIObserving {
         Task { @MainActor in self.apply(.landed(utterance: context.index, result)) }
     }
 
-    nonisolated func utteranceFailed(_ context: UtteranceContext) {
-        Task { @MainActor in self.apply(.failed(utterance: context.index)) }
+    nonisolated func utteranceFailed(_ context: UtteranceContext, recovery: RecoveryHandle?) {
+        Task { @MainActor in self.apply(.failed(utterance: context.index, recovery: recovery)) }
     }
 }

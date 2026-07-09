@@ -70,11 +70,13 @@ private final class SpyUIObserver: DictationUIObserving, @unchecked Sendable {
     private var _began: [Int] = []
     private var _landed: [InsertResult] = []
     private var _failed: [Int] = []
+    private var _recoveries: [RecoveryHandle?] = []
     private var stateTasks: [Int: Task<[DictationState], Never>] = [:]
 
     var began: [Int] { lock.withLock { _began } }
     var landed: [InsertResult] { lock.withLock { _landed } }
     var failed: [Int] { lock.withLock { _failed } }
+    var recoveries: [RecoveryHandle?] { lock.withLock { _recoveries } }
 
     func utteranceBegan(_ context: UtteranceContext, states: AsyncStream<DictationState>) {
         let task = Task {
@@ -92,8 +94,11 @@ private final class SpyUIObserver: DictationUIObserving, @unchecked Sendable {
         lock.withLock { _landed.append(result) }
     }
 
-    func utteranceFailed(_ context: UtteranceContext) {
-        lock.withLock { _failed.append(context.index) }
+    func utteranceFailed(_ context: UtteranceContext, recovery: RecoveryHandle?) {
+        lock.withLock {
+            _failed.append(context.index)
+            _recoveries.append(recovery)
+        }
     }
 
     func collectedStates(forUtterance index: Int) async -> [DictationState] {
@@ -148,6 +153,11 @@ private actor SpyHistory: HistoryWriting {
     }
     func updateFormatted(_ id: UUID, text: String) async { await log.add("history.formatted") }
     func updateInsertResult(_ id: UUID, result: InsertResult) async { await log.add("history.result") }
+    func recordUntranscribedSession(_ context: UtteranceContext) async -> UUID {
+        await log.add("history.untranscribed:u\(context.index)")
+        return UUID()
+    }
+    func deleteRecord(_ id: UUID) async { await log.add("history.deleted") }
 }
 
 private func makeCoordinator(
@@ -296,8 +306,112 @@ struct SessionCoordinatorTests {
         )
         let o0 = await (await coord.startUtterance()).value
         let o1 = await (await coord.startUtterance()).value
-        #expect(o0 == .failed)
+        #expect(o0 == .failed(recovery: nil))
         #expect(o1 == .completed(.pasted))
         #expect(await log.events.contains("insert:u1!"))
+    }
+}
+
+/// Streaming leg that exhausts the M4-T3 ladder with persisted audio.
+private struct UnrecoveredTranscriber: Transcribing {
+    func transcribe(
+        _ audio: AsyncThrowingStream<Data, any Error>,
+        _ context: UtteranceContext,
+        onRecordingEnded: @escaping @Sendable () async -> Void
+    ) async throws -> String {
+        for try await _ in audio {}
+        await onRecordingEnded()
+        throw UnrecoveredUtterance(audioID: "audio-1")
+    }
+}
+
+private actor FakeRecovery: RecoveryRetrying {
+    private(set) var calls: [String] = []
+    private(set) var discarded: [String] = []
+    func retryTranscribe(audioID: String) async throws -> String {
+        calls.append(audioID)
+        return "再試行の文章"
+    }
+    func discardRecovered(audioID: String) async {
+        discarded.append(audioID)
+    }
+}
+
+@Suite("SessionCoordinator M4-T3 recovery")
+struct SessionCoordinatorRecoveryTests {
+
+    @Test("a double-fault records the audit row and surfaces a retry handle")
+    func doubleFaultSurfacesRecovery() async {
+        let log = EventLog()
+        let observer = SpyUIObserver()
+        let coord = SessionCoordinator(
+            audio: PassthroughAudio(),
+            stt: UnrecoveredTranscriber(),
+            formatter: GatedFormatter(gate: nil, gateFor: nil),
+            inserter: RecordingInserter(log: log),
+            history: SpyHistory(log: log),
+            focus: StaticFocus(),
+            ui: observer
+        )
+        let outcome = await (await coord.startUtterance()).value
+        guard case .failed(let recovery) = outcome, let recovery else {
+            Issue.record("expected a retryable failure, got \(outcome)")
+            return
+        }
+        #expect(recovery.audioID == "audio-1")
+        #expect(await log.events.contains("history.untranscribed:u0"))
+        // The UI observer received the same handle for its retry button.
+        #expect(observer.recoveries == [recovery])
+    }
+
+    @Test("startRetry runs the post-STT pipeline and replaces the audit row")
+    func retryPipeline() async {
+        let log = EventLog()
+        let recovery = FakeRecovery()
+        let coord = SessionCoordinator(
+            audio: PassthroughAudio(),
+            stt: EchoTranscriber(),
+            formatter: GatedFormatter(gate: nil, gateFor: nil),
+            inserter: RecordingInserter(log: log),
+            history: SpyHistory(log: log),
+            focus: StaticFocus(),
+            recovery: recovery
+        )
+        let handle = RecoveryHandle(audioID: "audio-9", historyID: UUID())
+        guard let task = await coord.startRetry(handle) else {
+            Issue.record("first retry must not be treated as a duplicate")
+            return
+        }
+        let outcome = await task.value
+        #expect(outcome == .completed(.pasted))
+        let events = await log.events
+        #expect(events.contains("insert:再試行の文章!"))
+        // Audit row + WAV are discarded only after full completion.
+        #expect(events.contains("history.deleted"))
+        #expect(await recovery.calls == ["audio-9"])
+        #expect(await recovery.discarded == ["audio-9"])
+        // The in-flight guard has been released: a fresh retry is accepted.
+        #expect(await coord.startRetry(handle) != nil)
+    }
+
+    @Test("a failed retry surfaces the SAME handle so retry stays available")
+    func failedRetryKeepsHandle() async {
+        let log = EventLog()
+        let coord = SessionCoordinator(
+            audio: PassthroughAudio(),
+            stt: EchoTranscriber(),
+            formatter: GatedFormatter(gate: nil, gateFor: nil),
+            inserter: RecordingInserter(log: log),
+            history: SpyHistory(log: log),
+            focus: StaticFocus(),
+            recovery: nil // retry unavailable → UnrecoveredUtterance(audioID: nil)
+        )
+        let handle = RecoveryHandle(audioID: "audio-9", historyID: UUID())
+        guard let task = await coord.startRetry(handle) else {
+            Issue.record("first retry must not be treated as a duplicate")
+            return
+        }
+        // recovery seam absent → audio gone → not retryable
+        #expect(await task.value == .failed(recovery: nil))
     }
 }

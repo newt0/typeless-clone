@@ -112,6 +112,33 @@ public actor HistoryStore: HistoryWriting {
         await update(id, sql: "UPDATE dictations SET insertResult = ? WHERE uuid = ?", value: result.rawValue)
     }
 
+    /// M4-T3 double-fault audit row: the utterance's audio could not be
+    /// transcribed even by the batch resend. Empty `rawText`, no formatted
+    /// text, no insert result — the M7-T2 UI renders it as an untranscribed
+    /// session; a successful HUD retry deletes it via ``deleteRecord(_:)``.
+    public func recordUntranscribedSession(_ context: UtteranceContext) async -> UUID {
+        let uuid = UUID()
+        let record = DictationRecord(uuid: uuid.uuidString, createdAt: now(), rawText: "")
+        do {
+            try await dbQueue.write { db in
+                var toInsert = record
+                try toInsert.insert(db)
+            }
+            Log.event("history_untranscribed_recorded", category: .history)
+        } catch {
+            Log.error("history_write_ahead_failed", category: .history)
+        }
+        return uuid
+    }
+
+    public func deleteRecord(_ id: UUID) async {
+        do {
+            try await delete(uuid: id)
+        } catch {
+            Log.error("history_delete_failed", category: .history)
+        }
+    }
+
     private func update(_ id: UUID, sql: String, value: String) async {
         do {
             try await dbQueue.write { db in

@@ -23,8 +23,25 @@ struct HUDReducerTests {
 
     @Test("a late partial cannot resurrect a dismissed panel")
     func latePartialIgnored() {
-        let model = reduced([.began(utterance: 0), .partial(utterance: 0, "遅れて到着")])
+        let model = reduced([
+            .began(utterance: 0),
+            .state(utterance: 0, .recording),
+            .landed(utterance: 0, .pasted),
+            .phaseDismissFired,
+            .partial(utterance: 0, "遅れて到着"),
+        ])
         #expect(model.phase == .hidden)
+    }
+
+    @Test("began clears a stale failed phase — the retry button cannot outlive its own retry")
+    func beganClearsStaleFailed() {
+        let handle = RecoveryHandle(audioID: "a", historyID: UUID())
+        let model = reduced([
+            .began(utterance: 0),
+            .failed(utterance: 0, recovery: handle),
+            .began(utterance: 1), // the retry (or next press) takes over
+        ])
+        #expect(model.phase == .working)
     }
 
     @Test("transcribing/formatting/inserting collapse to the working phase")
@@ -44,7 +61,7 @@ struct HUDReducerTests {
         #expect(landed(.pastedViaAppleScript) == .done)
         #expect(landed(.clipboardFallback) == .clipboardFallback)
         #expect(landed(.blockedSecureInput) == .secureBlocked)
-        #expect(reduced([.began(utterance: 0), .failed(utterance: 0)]).phase == .failed)
+        #expect(reduced([.began(utterance: 0), .failed(utterance: 0, recovery: nil)]).phase == .failed(recovery: nil))
     }
 
     @Test("a stale failure cannot clobber the newer utterance's live recording")
@@ -57,7 +74,7 @@ struct HUDReducerTests {
             .began(utterance: 1),
             .state(utterance: 1, .recording),
             .partial(utterance: 1, "話し中"),
-            .failed(utterance: 0),
+            .failed(utterance: 0, recovery: nil),
         ])
         #expect(model.phase == .recording(partial: "話し中"))
         #expect(model.notice == .staleFailed)
@@ -125,7 +142,10 @@ struct HUDReducerTests {
         #expect(HUDReducer.phaseDwell(.done) == KoeConstants.hudDoneDwell)
         #expect(HUDReducer.phaseDwell(.clipboardFallback) == KoeConstants.hudClipboardDwell)
         #expect(HUDReducer.phaseDwell(.secureBlocked) == KoeConstants.hudNoticeDwell)
-        #expect(HUDReducer.phaseDwell(.failed) == KoeConstants.hudNoticeDwell)
+        #expect(HUDReducer.phaseDwell(.failed(recovery: nil)) == KoeConstants.hudNoticeDwell)
+        // A retryable failure must stay up long enough to reach the button.
+        let handle = RecoveryHandle(audioID: "a", historyID: UUID())
+        #expect(HUDReducer.phaseDwell(.failed(recovery: handle)) == KoeConstants.hudRetryDwell)
         if let clip = HUDReducer.phaseDwell(.clipboardFallback), let done = HUDReducer.phaseDwell(.done) {
             #expect(clip > done)
         }
