@@ -6,7 +6,7 @@ Protocol: see `06-autonomous-workflow.md`. Statuses: `todo` / `in-progress` / `p
 
 Environment resolved: **Xcode 26.6 installed, `gh` authenticated, autonomous PR flow proven** (PR #1 merged via CI-green → merge commit). Full test suite runs with `./scripts/test.sh`.
 
-**⚠️ 2026-07-09 — owner action needed: GitHub Actions billing.** PR #30 以降の CI が「payments failed / spending limit」で実行不可（macOS ランナー分数の上限超過とみられる）。github.com → Settings → Billing & plans で解消してください。解消後: 各オープン PR の CI を re-run → green を確認して merge commit でマージ（Claude が次セッションで自動処理可能）。ローカルゲート（build+test+review+verify）は全 PR 通過済み。
+**✅ 2026-07-09 — Actions billing resolved: リポジトリを public 化**（オーナー指示）。private の無料枠（macOS 10 倍消費で実質 200 分/月）を使い切ったのが原因だった。public の標準ランナーは無料。**全オープン PR（#30 metrics / #31 onboarding / #34 revocation(旧#32) / #33 golden set）は CI green でマージ済み — main は 213 テスト green、オープン PR ゼロ。** 残るオーナー対応は Gemini paid tier 移行（現 free tier は 20 req/日で dogfooding 不可）と各 PR の手動 QA、`/code-review ultra`、Phase 1 exit gate。
 
 **2026-07-09 — hotfix `fix/ws-ping-double-resume`**: `URLSessionWebSocketChannel.ping()` double-resumed its continuation when the pong raced a socket failure (SIGTRAP crash ~1–3 min after launch, reachable since PR-B's launch prewarm; found by M9-T1 runtime verification). Resume latched via `OSAllocatedUnfairLock`; 4-min soak clean. Details: decisions.md session 13.
 
