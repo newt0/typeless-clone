@@ -52,6 +52,10 @@ final class FnHotkeyTap {
     /// Create and enable the tap. Returns `false` (without crashing) when
     /// Accessibility is not yet granted — the caller surfaces the ⚠︎ state.
     func start() -> Bool {
+        // Idempotent: the M11 onboarding/settings re-arm paths may call this
+        // when a tap is already live; a second CGEventTap would double-fire
+        // every press (the batch-B single-start property, kept structurally).
+        guard tap == nil else { return true }
         guard AXIsProcessTrusted() else {
             Log.event("hotkey_ax_untrusted", category: .permission)
             return false

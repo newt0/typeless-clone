@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Live bridge into the Settings scene (M10-T1).
     let settingsHub = SettingsHub()
     private var historyWindow: NSWindow?
+    private var onboardingWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Agent app: no Dock icon, no app switcher (paired with LSUIElement).
@@ -73,7 +74,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
         let statusItemController = StatusItemController(
             qaActions: qaActions,
-            onOpenHistory: { [weak self] in self?.openHistory() }
+            onOpenHistory: { [weak self] in self?.openHistory() },
+            onOpenOnboarding: { [weak self] in self?.openOnboarding() }
         )
         self.statusItemController = statusItemController
         Log.event("app_launched", category: .app)
@@ -180,6 +182,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alt.start()
         self.altHotkey = alt
 
+        // First run: walk the user to a working dictation (M11-T1). Shown
+        // after the hotkeys are wired so the test-dictation step works the
+        // moment the pipeline is ready.
+        if !AppSettings.onboardingCompleted {
+            openOnboarding()
+        }
+
         // The real pipeline (E2E wiring PR-B): press → audio → Speechmatics →
         // Gemini formatting → paste, with write-ahead history. Assembled AFTER
         // the hotkeys and menu are wired, asynchronously: the first Keychain
@@ -216,6 +225,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         historyWindow?.makeKeyAndOrderFront(nil)
         settingsHub.historyRefreshTick += 1
         Log.event("history_window_opened", category: .history)
+    }
+
+    /// Open (or bring forward) the onboarding window (M11-T1); also the menu's
+    /// "セットアップをやり直す" entry.
+    private func openOnboarding() {
+        if onboardingWindow == nil {
+            let hosting = NSHostingController(
+                rootView: OnboardingView().environmentObject(settingsHub)
+            )
+            let window = NSWindow(contentViewController: hosting)
+            window.title = "Koe セットアップ"
+            window.isReleasedWhenClosed = false
+            window.center()
+            onboardingWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        onboardingWindow?.makeKeyAndOrderFront(nil)
+        Log.event("onboarding_opened", category: .app)
     }
 
     /// Composition root: construct the provider clients, stores, and the

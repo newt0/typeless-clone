@@ -26,13 +26,17 @@ final class StatusItemController {
     private let qaActions: [(title: String, run: () -> Void)]
     /// Opens the History window (M7-T2).
     private let onOpenHistory: () -> Void
+    /// Re-runs onboarding (M11-T1).
+    private let onOpenOnboarding: () -> Void
 
     init(
         qaActions: [(title: String, run: () -> Void)] = [],
-        onOpenHistory: @escaping () -> Void = {}
+        onOpenHistory: @escaping () -> Void = {},
+        onOpenOnboarding: @escaping () -> Void = {}
     ) {
         self.qaActions = qaActions
         self.onOpenHistory = onOpenHistory
+        self.onOpenOnboarding = onOpenOnboarding
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         applyIcon()
         statusItem.menu = buildMenu()
@@ -76,6 +80,9 @@ final class StatusItemController {
         let settings = menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
 
+        let onboarding = menu.addItem(withTitle: "セットアップをやり直す", action: #selector(openOnboarding), keyEquivalent: "")
+        onboarding.target = self
+
         menu.addItem(.separator())
         menu.addItem(withTitle: "Pause", action: nil, keyEquivalent: "") // placeholder
 
@@ -110,6 +117,10 @@ final class StatusItemController {
 
     @objc private func openHistory() {
         onOpenHistory()
+    }
+
+    @objc private func openOnboarding() {
+        onOpenOnboarding()
     }
 
     @objc private func openSettings() {

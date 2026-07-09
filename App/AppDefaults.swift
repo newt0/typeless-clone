@@ -20,4 +20,6 @@ enum AppDefaultsKey {
     static let fnHotkeyEnabled = "fnHotkeyEnabled"
     /// Per-app insertion overrides (M5-T3 table), JSON-encoded.
     static let insertionOverrides = "insertionOverrides"
+    /// Onboarding finished (M11-T1). Absent ⇒ first run → show onboarding.
+    static let onboardingCompleted = "onboardingCompleted"
 }

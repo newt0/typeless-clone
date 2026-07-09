@@ -41,6 +41,11 @@ enum AppSettings {
         set { defaults.set(newValue, forKey: AppDefaultsKey.fnHotkeyEnabled) }
     }
 
+    static var onboardingCompleted: Bool {
+        get { defaults.bool(forKey: AppDefaultsKey.onboardingCompleted) }
+        set { defaults.set(newValue, forKey: AppDefaultsKey.onboardingCompleted) }
+    }
+
     // MARK: Per-app insertion overrides (M5-T3 table)
 
     /// JSON wire form for one override row.
