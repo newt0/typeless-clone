@@ -236,14 +236,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let secrets = KeychainSecretStore()
         let sttKeyTask = Task.detached { secrets.read(.speechmaticsAPIKey) }
         let geminiKeyTask = Task.detached { secrets.read(.geminiAPIKey) }
-        let storesTask = Task.detached { () -> Result<(HistoryStore, DictionaryStore), any Error> in
+        let storesTask = Task.detached { () -> Result<(HistoryStore, DictionaryStore, MetricsStore), any Error> in
             do {
                 let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                     .appendingPathComponent("dev.newt.Koe", isDirectory: true)
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                 let history = try HistoryStore(path: dir.appendingPathComponent("history.sqlite").path)
                 let dictionary = try DictionaryStore(path: dir.appendingPathComponent("dictionary.sqlite").path)
-                return .success((history, dictionary))
+                let metrics = try MetricsStore(path: dir.appendingPathComponent("metrics.sqlite").path)
+                return .success((history, dictionary, metrics))
             } catch {
                 return .failure(error)
             }
@@ -256,9 +257,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // works without dictation.
         let history: HistoryStore
         let dictionary: DictionaryStore
+        let metricsStore: MetricsStore
         switch await storesTask.value {
         case .success(let stores):
-            (history, dictionary) = stores
+            (history, dictionary, metricsStore) = stores
         case .failure:
             Log.error("config_store_open_failed", category: .history)
             statusItemController.setConfigurationWarning(true)
@@ -268,6 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.dictionaryStore = dictionary
         settingsHub.historyStore = history
         settingsHub.dictionaryStore = dictionary
+        settingsHub.metricsStore = metricsStore
         // M10 retention setting, applied at launch (M7-T2 spec).
         let retentionDays = AppSettings.historyRetentionDays
         if retentionDays > 0 {
@@ -333,7 +336,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             history: history,
             focus: focus,
             ui: hud,
-            recovery: transcriber
+            recovery: transcriber,
+            metrics: AppMetricsRecorder(store: metricsStore)
         )
         self.coordinator = coordinator
         hud?.onRetry = { [weak self] handle in
@@ -345,6 +349,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsHub.pipelineReady = true
         settingsHub.historyRefreshTick += 1
         Log.event("pipeline_ready", category: .session)
+    }
+}
+
+/// Local metrics sink (M10-T2): honors the Settings opt-out per sample and
+/// stamps the prompt/provider identifiers the pure sample doesn't know.
+private struct AppMetricsRecorder: MetricsRecording {
+    let store: MetricsStore
+    func record(_ sample: DictationSample) async {
+        guard !AppSettings.telemetryOptOut else { return }
+        await store.record(
+            sample,
+            promptVersion: PromptTemplate.current.version,
+            provider: "speechmatics+gemini"
+        )
     }
 }
 

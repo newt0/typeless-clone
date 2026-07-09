@@ -21,6 +21,8 @@ struct SettingsView: View {
                 .tabItem { Label("アプリ別", systemImage: "square.grid.2x2") }
             APIKeysSettingsTab()
                 .tabItem { Label("APIキー", systemImage: "key") }
+            StatsSettingsTab()
+                .tabItem { Label("統計", systemImage: "chart.bar") }
         }
         .frame(width: 560, height: 460)
     }
@@ -321,6 +323,93 @@ private struct APIKeysSettingsTab: View {
                 }
             }
             .disabled(text.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+    }
+}
+
+
+// MARK: - 統計 (M10-T2 — local-only, no body text)
+
+private struct StatsSettingsTab: View {
+    @EnvironmentObject private var hub: SettingsHub
+    @State private var rows: [MetricsRow] = []
+    @State private var feedback: (total: Int, down: Int) = (0, 0)
+    @State private var redictation: Double?
+
+    private struct Segment: Identifiable {
+        let id: String
+        let p50: Int?
+        let p95: Int?
+        let budgetP50: Int?
+        let budgetP95: Int?
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("直近 \(rows.count) 回のディクテーション（このMac内のみ・本文は記録されません）")
+                .font(.caption).foregroundStyle(.secondary)
+            Table(segments) {
+                TableColumn("区間") { seg in Text(seg.id) }
+                TableColumn("P50") { seg in
+                    statText(seg.p50, budget: seg.budgetP50)
+                }
+                TableColumn("P95") { seg in
+                    statText(seg.p95, budget: seg.budgetP95)
+                }
+                TableColumn("目標 (P50/P95)") { seg in
+                    Text(seg.budgetP50.map { "\($0)ms / \(seg.budgetP95 ?? 0)ms" } ?? "—")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            HStack(spacing: 16) {
+                let downRate = feedback.total > 0
+                    ? Int((Double(feedback.down) / Double(feedback.total) * 100).rounded()) : 0
+                Text("👎 率: \(downRate)%（\(feedback.down)/\(feedback.total)）")
+                Text("30秒内の再発話率: \(redictation.map { "\(Int(($0 * 100).rounded()))%" } ?? "—")")
+            }
+            .font(.caption)
+            if AppSettings.telemetryOptOut {
+                Text("利用統計の記録はオフです（一般タブで変更できます）。")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+        }
+        .padding()
+        .task(id: hub.pipelineReady) { await reload() }
+    }
+
+    private var segments: [Segment] {
+        func stats(_ keyPath: KeyPath<MetricsRow, Int?>) -> (Int?, Int?) {
+            let values = rows.compactMap { $0[keyPath: keyPath] }
+            return (Percentiles.value(values, percentile: 50), Percentiles.value(values, percentile: 95))
+        }
+        let stt = stats(\.sttFinalizeMs)
+        let llm = stats(\.llmMs)
+        let ins = stats(\.insertionMs)
+        let e2e = stats(\.endToEndMs)
+        return [
+            Segment(id: "STT確定（キー解放→確定）", p50: stt.0, p95: stt.1, budgetP50: nil, budgetP95: nil),
+            Segment(id: "整形（確定→LLM完了）", p50: llm.0, p95: llm.1, budgetP50: nil, budgetP95: nil),
+            Segment(id: "挿入（LLM完了→挿入）", p50: ins.0, p95: ins.1, budgetP50: nil, budgetP95: nil),
+            Segment(id: "合計（キー解放→挿入）", p50: e2e.0, p95: e2e.1, budgetP50: 1500, budgetP95: 3000),
+        ]
+    }
+
+    @ViewBuilder
+    private func statText(_ value: Int?, budget: Int?) -> some View {
+        if let value {
+            Text("\(value)ms")
+                .foregroundStyle(budget.map { value > $0 ? Color.red : .primary } ?? .primary)
+        } else {
+            Text("—").foregroundStyle(.secondary)
+        }
+    }
+
+    private func reload() async {
+        guard let metrics = hub.metricsStore else { return }
+        rows = (try? await metrics.recent(limit: 100)) ?? []
+        redictation = try? await metrics.redictationRate()
+        if let history = hub.historyStore {
+            feedback = (try? await history.feedbackStats()) ?? (0, 0)
         }
     }
 }

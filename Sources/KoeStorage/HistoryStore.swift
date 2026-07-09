@@ -154,6 +154,14 @@ public actor HistoryStore: HistoryWriting {
         }
     }
 
+    /// 👎-rate inputs over the most recent `limit` rows (M10-T2 stats view).
+    public func feedbackStats(limit: Int = 100) async throws -> (total: Int, down: Int) {
+        try await dbQueue.read { db in
+            let rows = try DictationRecord.order(Column("createdAt").desc).limit(limit).fetchAll(db)
+            return (rows.count, rows.filter { $0.feedback == -1 }.count)
+        }
+    }
+
     // MARK: Queries (used by the history UI, M7-T2)
 
     /// Most recent dictations, newest first.
