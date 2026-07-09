@@ -1,5 +1,15 @@
 # Decision log
 
+## 2026-07-09 (session 13 — E2E wiring PR-A: streaming seams)
+
+Owner directive: work through the remaining STATUS.md tasks autonomously (/loop). First unblocked task: the STT+format+paste end-to-end wiring, split into PR-A (KoeCore/Providers seams, CI-verifiable) and PR-B (App composition root, owner-QA-gated).
+
+- **`AudioCapturing`/`Transcribing` seams reshaped from batch (`Data`) to streaming (`AsyncStream<Data>`).** The M1-T2 batch shape would have buffered the whole utterance and only then contacted STT — every utterance would pay its own duration again after key-up, structurally breaking the §10.3 `sttFinalTimeout` (2s) ladder for any real sentence. Chunks now flow to STT while the user speaks (matching how `AudioCaptureEngine` and `SpeechmaticsClient` already work); `Transcribing.transcribe` gains an `onRecordingEnded` callback so the coordinator advances the state machine at true end-of-speech, not at transcript-complete.
+- **`UtteranceContext` now carries `recordingBundleID`, captured per utterance at press time** (closes the M5-T2 review prerequisite). `SessionCoordinator` takes a `ContextProviding` collaborator and captures `frontmostBundleID()` in `startUtterance()`; `LLMFormatter`'s `frontmostApp` live-read closure is deleted (same signal, but a live read races overlapping utterances and, if ever pointed at the `@MainActor` provider from the pipeline task, is a crash hazard). PR-B consumes the same field in `PasteSimulator` and removes its closure.
+- **New `STTTranscriber` (KoeCore) adapts `STTClient` behind `Transcribing`, with a finals-tail circuit breaker.** New `KoeConstants.sttStallTimeout` (30s) + `STTError.timeout`: bounds key-up → transcript-complete only (NOT the recording leg — a deliberate deviation from the first design sketch, which bounded the whole `transcribe` call and would have killed any utterance longer than the bound; recording length is the user's, capped by `maxSessionRecording`). Without this, a dead socket that accepted audio but never confirms end-of-transcript wedges that utterance's FIFO ticket forever — and with it every insertion behind it (a full-app freeze class, distinct from M4-T3's 2s-resend UX which stays blocked on M9). On cancellation the transcriber re-checks `Task.isCancelled` before returning a stream-terminated transcript so a cancelled utterance can't insert a truncated result.
+- **`SessionCoordinator`'s catch-all now logs `utterance_failed`** (was completely silent — no signal at all when an utterance died end-to-end).
+- 171 tests green (7 new: bundle-id threading ×2, LLM app-context ×1, STTTranscriber happy/error/stall/cancel ×4).
+
 ## 2026-07-09 (session 12 — full-codebase review, batch A: insertion)
 
 Owner directive: review the entire codebase batch-by-batch (A–F), fix confirmed findings, no approvals. Batch A = PasteSimulator + KoeCore/Insertion + serializer + context provider + key resolver.

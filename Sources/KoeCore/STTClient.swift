@@ -25,6 +25,9 @@ public enum STTError: Error, Equatable, Sendable {
     case server(type: String)
     /// A server frame we could not parse into a known message.
     case malformedResponse
+    /// No final transcript within the stall bound after end-of-speech
+    /// (`KoeConstants.sttStallTimeout`); M4-T3's batch resend keys off this.
+    case timeout
     /// `send`/`endUtterance` called before a session was started (or after it
     /// ended).
     case notStarted

@@ -5,7 +5,15 @@ import Foundation
 /// lifetime and usable by stages for logging/metrics.
 public struct UtteranceContext: Sendable, Equatable {
     public let index: Int
-    public init(index: Int) { self.index = index }
+    /// Frontmost app bundle id captured when this utterance's recording began.
+    /// Feeds both the insertion app-changed guard (M5-T2 review note: a single
+    /// shared closure could not distinguish two overlapping utterances) and the
+    /// LLM prompt's app-context block — the app the text is meant to land in.
+    public let recordingBundleID: String?
+    public init(index: Int, recordingBundleID: String? = nil) {
+        self.index = index
+        self.recordingBundleID = recordingBundleID
+    }
 }
 
 /// The formatted result ready for insertion.
@@ -27,14 +35,25 @@ public struct PipelineOutput: Sendable, Equatable {
 // streaming `STTClient` protocol will be adapted behind ``Transcribing`` rather
 // than being the coordinator's seam (see docs/decisions.md 2026-07-04).
 
-/// Captures audio for one utterance. Refined in M3 (streaming, device-switch).
+/// Hands the coordinator one utterance's live audio: ~40ms PCM16 chunks that
+/// finish when the mic stops (key-up or session cap). Streaming — not a
+/// materialized blob — so STT receives audio while the user is still speaking
+/// and key-up→final latency stays inside the §10.3 ladder.
 public protocol AudioCapturing: Sendable {
-    func record(_ context: UtteranceContext) async throws -> Data
+    func record(_ context: UtteranceContext) async throws -> AsyncStream<Data>
 }
 
-/// Audio → final transcript. Backed by an M4 `STTClient` adapter.
+/// Live audio → final transcript. Backed by an M4 `STTClient` adapter.
 public protocol Transcribing: Sendable {
-    func transcribe(_ audio: Data, _ context: UtteranceContext) async throws -> String
+    /// `onRecordingEnded` fires exactly once, when the audio stream is
+    /// exhausted (mic stopped) — before the STT finals settle — so the
+    /// coordinator can advance the session state machine at true key-up time
+    /// rather than at transcript-complete time.
+    func transcribe(
+        _ audio: AsyncStream<Data>,
+        _ context: UtteranceContext,
+        onRecordingEnded: @escaping @Sendable () async -> Void
+    ) async throws -> String
 }
 
 /// Transcript → formatted output (with degradation flag). Implemented in M6.

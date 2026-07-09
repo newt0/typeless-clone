@@ -66,6 +66,14 @@ public enum KoeConstants {
     public static let sttConnectTimeout: Duration = .seconds(5)
     /// key-up → STT final; exceeding triggers a single batch resend.
     public static let sttFinalTimeout: Duration = .seconds(2)
+    /// Absolute bound on key-up → transcript-complete before the utterance is
+    /// failed. A circuit breaker well above `sttFinalTimeout`'s resend trigger
+    /// (which lands with M4-T3): a dead socket that accepted the audio but
+    /// never confirms end-of-transcript would otherwise hang its utterance —
+    /// and, since every FIFO ticket must complete, wedge insertion for every
+    /// utterance behind it. The recording leg itself is unbounded by design
+    /// (capped upstream by `maxSessionRecording`).
+    public static let sttStallTimeout: Duration = .seconds(30)
     /// LLM time-to-first-token; exceeding triggers one retry then degradation.
     public static let llmTTFTTimeout: Duration = .milliseconds(1500)
     /// LLM total generation (per chunk when split); exceeding degrades to raw.
