@@ -116,7 +116,7 @@ public actor SessionCoordinator {
             recordingBundleID: await bundleID
         )
         return Task {
-            let outcome = await self.run(context) { session in
+            let outcome = await self.run(context, isRetry: true) { session in
                 guard let recovery = self.recovery else { throw UnrecoveredUtterance(audioID: nil) }
                 // Synthetic transitions: there is no live mic for a retry, but
                 // the lifecycle (and its observers) stay uniform.
@@ -178,6 +178,7 @@ public actor SessionCoordinator {
     /// the failure (`nil` = not retryable).
     private func run(
         _ context: UtteranceContext,
+        isRetry: Bool = false,
         transcribe: (DictationSession) async throws -> String,
         failureRecovery: (any Error) async -> RecoveryHandle?
     ) async -> DictationOutcome {
@@ -225,6 +226,7 @@ public actor SessionCoordinator {
                 createdAt: now(),
                 utterance: context.index,
                 outcome: outcomeLabel,
+                isRetry: isRetry,
                 degraded: await session.degradedToRaw,
                 appBundleID: context.recordingBundleID,
                 metrics: await session.metrics

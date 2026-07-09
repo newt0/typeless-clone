@@ -9,6 +9,7 @@ public struct MetricsRow: Codable, Sendable, Equatable, FetchableRecord, Mutable
     public var createdAt: Date
     public var utterance: Int
     public var outcome: String
+    public var isRetry: Bool
     public var degraded: Bool
     public var appBundleID: String?
     public var promptVersion: String
@@ -53,6 +54,7 @@ public actor MetricsStore {
                     createdAt TEXT NOT NULL,
                     utterance INTEGER NOT NULL,
                     outcome TEXT NOT NULL,
+                    isRetry INTEGER NOT NULL DEFAULT 0,
                     degraded INTEGER NOT NULL,
                     appBundleID TEXT,
                     promptVersion TEXT NOT NULL,
@@ -74,6 +76,7 @@ public actor MetricsStore {
             createdAt: sample.createdAt,
             utterance: sample.utterance,
             outcome: sample.outcome,
+            isRetry: sample.isRetry,
             degraded: sample.degraded,
             appBundleID: sample.appBundleID,
             promptVersion: promptVersion,
@@ -109,17 +112,18 @@ public actor MetricsStore {
     }
 
     /// Rework proxy (§1.4): fraction of dictations followed by another into
-    /// the SAME app within `window` seconds — over the most recent `limit`.
-    public func redictationRate(within window: TimeInterval = 30, limit: Int = 100) async throws -> Double? {
-        let rows = try await recent(limit: limit).sorted { $0.createdAt < $1.createdAt }
-        guard rows.count >= 2 else { return nil }
+    /// the SAME app within `window` seconds. Pure over already-fetched rows so
+    /// the stats view reuses its single `recent()` fetch (review finding).
+    public static func redictationRate(rows: [MetricsRow], within window: TimeInterval = 30) -> Double? {
+        let ordered = rows.sorted { $0.createdAt < $1.createdAt }
+        guard ordered.count >= 2 else { return nil }
         var followed = 0
-        for (current, next) in zip(rows, rows.dropFirst()) {
+        for (current, next) in zip(ordered, ordered.dropFirst()) {
             if let app = current.appBundleID, app == next.appBundleID,
                next.createdAt.timeIntervalSince(current.createdAt) <= window {
                 followed += 1
             }
         }
-        return Double(followed) / Double(rows.count - 1)
+        return Double(followed) / Double(ordered.count - 1)
     }
 }

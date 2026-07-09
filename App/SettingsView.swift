@@ -378,8 +378,11 @@ private struct StatsSettingsTab: View {
     }
 
     private var segments: [Segment] {
+        // Retry samples carry synthetic recording timestamps (stamped at
+        // retry-click) — excluding them keeps the latency budget honest.
+        let liveRows = rows.filter { !$0.isRetry }
         func stats(_ keyPath: KeyPath<MetricsRow, Int?>) -> (Int?, Int?) {
-            let values = rows.compactMap { $0[keyPath: keyPath] }
+            let values = liveRows.compactMap { $0[keyPath: keyPath] }
             return (Percentiles.value(values, percentile: 50), Percentiles.value(values, percentile: 95))
         }
         let stt = stats(\.sttFinalizeMs)
@@ -407,7 +410,7 @@ private struct StatsSettingsTab: View {
     private func reload() async {
         guard let metrics = hub.metricsStore else { return }
         rows = (try? await metrics.recent(limit: 100)) ?? []
-        redictation = try? await metrics.redictationRate()
+        redictation = MetricsStore.redictationRate(rows: rows)
         if let history = hub.historyStore {
             feedback = (try? await history.feedbackStats()) ?? (0, 0)
         }

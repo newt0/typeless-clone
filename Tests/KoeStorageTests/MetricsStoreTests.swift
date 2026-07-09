@@ -45,7 +45,7 @@ struct MetricsStoreTests {
         await store.record(sample(at: base.addingTimeInterval(10)), promptVersion: "v", provider: "p")   // follow-up ≤30s
         await store.record(sample(at: base.addingTimeInterval(100)), promptVersion: "v", provider: "p")  // outside window
         await store.record(sample(at: base.addingTimeInterval(105), app: "com.other"), promptVersion: "v", provider: "p") // other app
-        let rate = try await store.redictationRate()
+        let rate = MetricsStore.redictationRate(rows: try await store.recent())
         #expect(rate == 1.0 / 3.0)
     }
 }

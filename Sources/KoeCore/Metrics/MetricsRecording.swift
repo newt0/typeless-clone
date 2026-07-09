@@ -8,6 +8,9 @@ public struct DictationSample: Sendable, Equatable {
     public let utterance: Int
     /// `InsertResult.rawValue`, or `"failed"`.
     public let outcome: String
+    /// True for M4-T3 HUD retries: their "recording" timestamps are synthetic
+    /// (stamped at retry-click), so latency views must exclude them.
+    public let isRetry: Bool
     public let degraded: Bool
     public let appBundleID: String?
     /// key-up → STT final (budget segment 1), ms.
@@ -24,6 +27,7 @@ public struct DictationSample: Sendable, Equatable {
         createdAt: Date,
         utterance: Int,
         outcome: String,
+        isRetry: Bool = false,
         degraded: Bool,
         appBundleID: String?,
         metrics: DictationMetrics
@@ -31,25 +35,23 @@ public struct DictationSample: Sendable, Equatable {
         self.createdAt = createdAt
         self.utterance = utterance
         self.outcome = outcome
+        self.isRetry = isRetry
         self.degraded = degraded
         self.appBundleID = appBundleID
-        self.sttFinalizeMs = metrics.sttFinalizeDuration.map(Self.ms)
+        self.sttFinalizeMs = DictationMetrics.gapMs(metrics.tKeyUp, metrics.tSTTFinal)
         self.llmMs = DictationMetrics.gapMs(metrics.tSTTFinal, metrics.tLLMDone)
-        self.insertionMs = metrics.insertionDuration.map(Self.ms)
-        self.endToEndMs = metrics.endToEnd.map(Self.ms)
-    }
-
-    private static func ms(_ duration: Duration) -> Int {
-        let seconds = Double(duration.components.seconds)
-            + Double(duration.components.attoseconds) / 1e18
-        return Int((seconds * 1000).rounded())
+        self.insertionMs = DictationMetrics.gapMs(metrics.tLLMDone, metrics.tInsertDone)
+        self.endToEndMs = DictationMetrics.gapMs(metrics.tKeyUp, metrics.tInsertDone)
     }
 }
 
 extension DictationMetrics {
+    /// Single Date-gap → ms conversion (review finding: two copies diverged).
+    /// Floored at 0: a backward wall-clock jump mid-utterance must not persist
+    /// a negative duration into the stats.
     static func gapMs(_ start: Date?, _ end: Date?) -> Int? {
         guard let start, let end else { return nil }
-        return Int((end.timeIntervalSince(start) * 1000).rounded())
+        return max(0, Int((end.timeIntervalSince(start) * 1000).rounded()))
     }
 }
 
