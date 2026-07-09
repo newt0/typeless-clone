@@ -31,9 +31,12 @@ final class PasteSimulator: TextInserting {
     private let context: InsertionContextProvider
     private let ownBundleID: String
     /// Per-app override table (preferred path + extra pre-delay). Empty by
-    /// default; Settings (M10) rebuilds it. Resolved against the target app's
-    /// bundle id at insertion time.
-    private let overrides: InsertionOverrideTable
+    /// default; Settings (M10) rebuilds it via ``updateOverrides(_:)``.
+    /// Resolved against the target app's bundle id at insertion time.
+    private var overrides: InsertionOverrideTable
+    /// M10 "LLM 失敗時" setting: true ⇒ a degraded (raw-transcript) output
+    /// lands on the clipboard instead of being pasted. Read per insertion.
+    private let degradedToClipboard: () -> Bool
     /// Guards against overlapping insertions racing on the shared NSPasteboard
     /// snapshot/restore. Production is already serialized by `InsertionSerializer`;
     /// this backstops the DEBUG QA hooks, which can be fired repeatedly.
@@ -42,11 +45,18 @@ final class PasteSimulator: TextInserting {
     init(
         context: InsertionContextProvider = InsertionContextProvider(),
         ownBundleID: String = Bundle.main.bundleIdentifier ?? "dev.newt.Koe",
-        overrides: InsertionOverrideTable = InsertionOverrideTable()
+        overrides: InsertionOverrideTable = InsertionOverrideTable(),
+        degradedToClipboard: @escaping () -> Bool = { false }
     ) {
         self.context = context
         self.ownBundleID = ownBundleID
         self.overrides = overrides
+        self.degradedToClipboard = degradedToClipboard
+    }
+
+    /// Settings (M10) pushes edited per-app overrides; next insertion uses them.
+    func updateOverrides(_ table: InsertionOverrideTable) {
+        overrides = table
     }
 
     // MARK: TextInserting
@@ -55,7 +65,14 @@ final class PasteSimulator: TextInserting {
         // The recording-time bundle id rides the utterance itself, so two
         // overlapping dictations each check against the app they were spoken
         // into (session-10 review note, closed by the E2E wiring).
-        await performInsert(output.text, recordingBundleID: context.recordingBundleID)
+        await performInsert(
+            output.text,
+            recordingBundleID: context.recordingBundleID,
+            // M10 "LLM 失敗時 = クリップボードのみ": a degraded output skips
+            // the paste and takes the clipboard landing (after the secure
+            // preflight — invariant 3 always wins).
+            forceClipboardLanding: output.degraded && degradedToClipboard()
+        )
     }
 
     // MARK: Insertion
@@ -63,7 +80,11 @@ final class PasteSimulator: TextInserting {
     /// Run the preflight and, if clear, the per-app insertion plan.
     /// `recordingBundleID` is the app the utterance was dictated into; `nil`
     /// skips the app-change guard (QA hook pastes wherever the cursor is).
-    func performInsert(_ text: String, recordingBundleID: String?) async -> InsertResult {
+    func performInsert(
+        _ text: String,
+        recordingBundleID: String?,
+        forceClipboardLanding: Bool = false
+    ) async -> InsertResult {
         guard beginInserting() else { return .clipboardFallback }
         defer { isInserting = false }
 
@@ -74,16 +95,16 @@ final class PasteSimulator: TextInserting {
             Log.event("insert_blocked_secure", category: .insertion, code: secureCode(reason))
             return .blockedSecureInput
 
+        case .proceed where forceClipboardLanding:
+            Log.event("insert_clipboard_degraded_setting", category: .insertion)
+            return clipboardLanding(text, targetBundleID: facts.frontmostBundleID)
+
         case .clipboardHold:
             // Frontmost app changed since recording: don't paste into the wrong
             // window — leave the marked text for the user to ⌘V (Design §6.3-1).
             // This is the path-3 landing, decided up front by the preflight.
             Log.event("insert_clipboard_hold_app_changed", category: .insertion)
-            let prepared = PasteTextPreparer.prepare(text, targetBundleID: facts.frontmostBundleID).text
-            if !putMarkedText(prepared, on: NSPasteboard.general) {
-                Log.error("paste_clipboard_write_failed", category: .insertion)
-            }
-            return .clipboardFallback
+            return clipboardLanding(text, targetBundleID: facts.frontmostBundleID)
 
         case .proceed:
             let override = overrides.override(for: facts.frontmostBundleID)
@@ -94,6 +115,20 @@ final class PasteSimulator: TextInserting {
                 targetBundleID: facts.frontmostBundleID
             )
         }
+    }
+
+    /// Shared clipboard landing (app-changed hold + degraded-output setting):
+    /// prepare, fall back to the raw text when preparation strips everything,
+    /// and never clobber the user's clipboard for an empty payload (review
+    /// finding — an empty degraded utterance wiped the clipboard).
+    private func clipboardLanding(_ text: String, targetBundleID: String?) -> InsertResult {
+        let prepared = PasteTextPreparer.prepare(text, targetBundleID: targetBundleID).text
+        let payload = prepared.isEmpty ? text : prepared
+        guard !payload.isEmpty else { return .pasted } // nothing to keep
+        if !putMarkedText(payload, on: NSPasteboard.general) {
+            Log.error("paste_clipboard_write_failed", category: .insertion)
+        }
+        return .clipboardFallback
     }
 
     /// Set the re-entrancy guard. Returns `false` (and logs) if an insertion is

@@ -86,6 +86,17 @@ final class FnHotkeyTap {
         return true
     }
 
+    /// Turn the hotkey off from Settings (M10). Unlike a bare ``stop()``, this
+    /// first resets the engine THROUGH the activation, so a recording that is
+    /// mid-hold gets its `onStop` (icon reset + mic stop) — with the tap gone,
+    /// the physical key-up could never deliver it (review finding: the mic
+    /// stayed recording until the 20-minute cap).
+    func disable() {
+        activation.apply(engine.reset())
+        stop()
+        Log.event("hotkey_tap_disabled", category: .hotkey)
+    }
+
     /// Disable and unregister the tap. Owned for the whole app lifetime by
     /// `AppDelegate`, so there is no `deinit` teardown — the single instance
     /// never outlives the process.

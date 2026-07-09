@@ -21,6 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pressLoopTask: Task<Void, Never>?
     private var pressContinuation: AsyncStream<DictationTrigger>.Continuation?
     private var hudController: HUDPanelController?
+    /// Live bridge into the Settings scene (M10-T1).
+    let settingsHub = SettingsHub()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Agent app: no Dock icon, no app switcher (paired with LSUIElement).
@@ -29,8 +31,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // One AX/frontmost reader shared by the inserter (preflight/verify) and
         // the coordinator (per-utterance recording-app capture).
         let contextProvider = InsertionContextProvider()
-        let pasteSimulator = PasteSimulator(context: contextProvider)
+        let pasteSimulator = PasteSimulator(
+            context: contextProvider,
+            overrides: AppSettings.overrideTable(),
+            degradedToClipboard: { AppSettings.degradedToClipboard }
+        )
         self.pasteSimulator = pasteSimulator
+        settingsHub.applyOverrides = { [weak pasteSimulator] table in
+            pasteSimulator?.updateOverrides(table)
+        }
 
         // DEBUG QA hooks (M5-T2/T3): delayed test pastes that exercise each
         // insertion path by hand, independent of the live pipeline. Click a
@@ -73,7 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // effect without rebuilding the engine. Cap → notice; fault → icon
         // reset only (the failure reaches the HUD through the pipeline).
         let audioEngine = AudioCaptureEngine(
-            preferBuiltIn: { UserDefaults.standard.object(forKey: AppDefaultsKey.preferBuiltInMic) as? Bool ?? true },
+            preferBuiltIn: { AppSettings.preferBuiltInMic },
             onCapReached: {
                 statusItemController.setRecording(false)
                 hud.notify(.capReached)
@@ -128,17 +137,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Fn push-to-talk (CGEventTap). Its liveness monitor surfaces ⚠︎ if
-        // Accessibility is later revoked.
+        // Accessibility is later revoked. Startable/stoppable live from the
+        // M10 Settings toggle; ⌥Space stays independent of this switch.
         let tap = FnHotkeyTap(
             onStart: onStart,
             onStop: onStop,
             onRevoked: { statusItemController.setPermissionWarning(true) }
         )
-        if !tap.start() {
-            // Accessibility not granted yet: surface ⚠︎ instead of crashing.
+        if AppSettings.fnHotkeyEnabled {
+            if !tap.start() {
+                // Accessibility not granted yet: surface ⚠︎ instead of crashing.
+                statusItemController.setPermissionWarning(true)
+            }
+        } else if !AXIsProcessTrusted() {
+            // The tap used to be the app's only AX probe; keep the ⚠︎ honest
+            // even with the Fn hotkey switched off (paste/AX reads still need
+            // the permission — review finding).
+            Log.event("hotkey_ax_untrusted", category: .permission)
             statusItemController.setPermissionWarning(true)
         }
         self.hotkeyTap = tap
+        settingsHub.applyFnEnabled = { [weak self] enabled -> Bool in
+            guard let self, let tap = self.hotkeyTap else { return false }
+            if enabled {
+                let started = tap.start()
+                if !started { self.statusItemController?.setPermissionWarning(true) }
+                return started
+            } else {
+                tap.disable()
+                return true
+            }
+        }
 
         // Alternative hotkey (⌥Space, KeyboardShortcuts). Independent of the Fn
         // tap and of Accessibility, so it works even in the untrusted state.
@@ -211,6 +240,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         self.historyStore = history
         self.dictionaryStore = dictionary
+        settingsHub.historyStore = history
+        settingsHub.dictionaryStore = dictionary
+        // M10 retention setting, applied at launch (M7-T2 spec).
+        let retentionDays = AppSettings.historyRetentionDays
+        if retentionDays > 0 {
+            Task { try? await history.deleteOlderThan(days: retentionDays) }
+        }
 
         // No STT key → no dictation is possible at all: hard block with ⚠︎.
         guard let sttKey = await sttKeyTask.value else {
@@ -256,8 +292,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             vocab: vocab
         )
 
-        let entries = (try? await dictionary.promptEntries()) ?? []
-        let formatter = LLMFormatter(client: llmClient, dictionary: entries)
+        // Style and prompt dictionary are providers → Settings edits apply on
+        // the next utterance (closes the launch-snapshot gap from PR-B).
+        let formatter = LLMFormatter(
+            client: llmClient,
+            styleProvider: { AppSettings.writingStyle },
+            dictionaryProvider: { (try? await dictionary.promptEntries()) ?? [] }
+        )
         let coordinator = SessionCoordinator(
             audio: audioSource,
             stt: transcriber,
@@ -275,6 +316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // to FIFO ticket order for retries too.
             self?.pressContinuation?.yield(.retry(handle))
         }
+        settingsHub.pipelineReady = true
         Log.event("pipeline_ready", category: .session)
     }
 }
