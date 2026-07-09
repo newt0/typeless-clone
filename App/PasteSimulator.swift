@@ -34,18 +34,6 @@ final class PasteSimulator: TextInserting {
     /// default; Settings (M10) rebuilds it. Resolved against the target app's
     /// bundle id at insertion time.
     private let overrides: InsertionOverrideTable
-    /// Frontmost bundle id captured when the current recording started; the
-    /// coordinator supplies this at record time (future wiring). `nil` skips the
-    /// app-change guard — used by the QA hook, which pastes wherever the cursor is.
-    ///
-    /// ⚠︎ pipeline-wiring note: this is a single fixed closure, so it cannot tell
-    /// two *overlapping* utterances apart (SessionCoordinator records
-    /// concurrently, serializing only at insertion). Before wiring the real
-    /// pipeline, the per-utterance recording bundle id must be threaded through
-    /// `UtteranceContext` (or captured per `insert` call), not read from one
-    /// shared closure. See docs/decisions.md (session 10).
-    private let recordingBundleID: @Sendable () -> String?
-
     /// Guards against overlapping insertions racing on the shared NSPasteboard
     /// snapshot/restore. Production is already serialized by `InsertionSerializer`;
     /// this backstops the DEBUG QA hooks, which can be fired repeatedly.
@@ -54,29 +42,32 @@ final class PasteSimulator: TextInserting {
     init(
         context: InsertionContextProvider = InsertionContextProvider(),
         ownBundleID: String = Bundle.main.bundleIdentifier ?? "dev.newt.Koe",
-        overrides: InsertionOverrideTable = InsertionOverrideTable(),
-        recordingBundleID: @escaping @Sendable () -> String? = { nil }
+        overrides: InsertionOverrideTable = InsertionOverrideTable()
     ) {
         self.context = context
         self.ownBundleID = ownBundleID
         self.overrides = overrides
-        self.recordingBundleID = recordingBundleID
     }
 
     // MARK: TextInserting
 
     func insert(_ output: PipelineOutput, _ context: UtteranceContext) async throws -> InsertResult {
-        await performInsert(output.text)
+        // The recording-time bundle id rides the utterance itself, so two
+        // overlapping dictations each check against the app they were spoken
+        // into (session-10 review note, closed by the E2E wiring).
+        await performInsert(output.text, recordingBundleID: context.recordingBundleID)
     }
 
     // MARK: Insertion
 
     /// Run the preflight and, if clear, the per-app insertion plan.
-    func performInsert(_ text: String) async -> InsertResult {
+    /// `recordingBundleID` is the app the utterance was dictated into; `nil`
+    /// skips the app-change guard (QA hook pastes wherever the cursor is).
+    func performInsert(_ text: String, recordingBundleID: String?) async -> InsertResult {
         guard beginInserting() else { return .clipboardFallback }
         defer { isInserting = false }
 
-        let facts = context.preflightFacts(recordingBundleID: recordingBundleID())
+        let facts = context.preflightFacts(recordingBundleID: recordingBundleID)
         switch InsertionPreflight.decide(facts) {
         case .blockedSecureInput(let reason):
             // Invariant 3: never insert, never touch the clipboard.
