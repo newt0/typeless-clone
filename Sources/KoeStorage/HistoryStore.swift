@@ -131,6 +131,20 @@ public actor HistoryStore: HistoryWriting {
         return uuid
     }
 
+    /// M7-T2 👎 feedback (rework-rate proxy metric, §1.4); `nil` clears it.
+    public func updateFeedback(_ id: UUID, feedback: Int?) async {
+        do {
+            try await dbQueue.write { db in
+                try db.execute(
+                    sql: "UPDATE dictations SET feedback = ? WHERE uuid = ?",
+                    arguments: [feedback, id.uuidString]
+                )
+            }
+        } catch {
+            Log.error("history_update_failed", category: .history)
+        }
+    }
+
     public func deleteRecord(_ id: UUID) async {
         do {
             try await delete(uuid: id)

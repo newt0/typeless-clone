@@ -17,6 +17,11 @@ Owner directive: work through the remaining STATUS.md tasks autonomously (/loop)
 - **Declined: replacing the finals-tail race with `Deadline.run`.** The tail deadline starts mid-race (at `.fed`), not at operation start — `Deadline`'s shape. Restructuring event consumption into two sequential phases to fit it would cost more than the duplication; a comment in `STTTranscriber` records this.
 - 174 tests green (10 new vs. main). `/verify` deferred to PR-B: these seams have no app-reachable runtime surface until the composition root wires them (nothing in the running app changes on this branch).
 
+## 2026-07-09 (session 13 — M7-T2: history UI)
+
+- Thin consumer by design: search hybrid (FTS trigram / LIKE), staged writes, and FTS-consistent deletion are `HistoryStore`'s tested responsibilities; the view only renders and calls. The one store addition is `updateFeedback` (👎 toggle, `feedback = -1`/nil — the §1.4 rework-rate proxy that M10-T2 will read).
+- The History window reuses `settingsHub` as its dependency bridge (store arrives async after launch; the window opened early shows an explanatory empty state and reloads keyed on `pipelineReady`). Untranscribed sessions (M4-T3 audit rows) render as 「未転写の録音」 with a dedicated badge instead of an empty line.
+
 ## 2026-07-09 (session 13 — M10-T1: settings)
 
 - **Every setting is read through a provider at point-of-use, not captured at pipeline assembly** — the acceptance criterion is "consumed by its owning module", and rebuilding the coordinator on change would break in-flight utterances. `LLMFormatter` gained `styleProvider`/`dictionaryProvider` closures (back-compat convenience init keeps the 8 existing test call sites; this also closes the PR-B "prompt dictionary is a launch snapshot" gap); `PasteSimulator` takes `updateOverrides(_:)` + a `degradedToClipboard` closure (checked AFTER the secure preflight — invariant 3 always wins); the Fn toggle start/stops the existing tap live (its single-`start()` property is preserved: start is only called from launch-when-enabled and from the toggle's off→on edge).

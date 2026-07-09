@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import KoeCore
 import KoeProviders
 import KoeStorage
@@ -23,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hudController: HUDPanelController?
     /// Live bridge into the Settings scene (M10-T1).
     let settingsHub = SettingsHub()
+    private var historyWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Agent app: no Dock icon, no app switcher (paired with LSUIElement).
@@ -69,7 +71,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #else
         let qaActions: [(title: String, run: () -> Void)] = []
         #endif
-        let statusItemController = StatusItemController(qaActions: qaActions)
+        let statusItemController = StatusItemController(
+            qaActions: qaActions,
+            onOpenHistory: { [weak self] in self?.openHistory() }
+        )
         self.statusItemController = statusItemController
         Log.event("app_launched", category: .app)
 
@@ -190,6 +195,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 statusItemController: statusItemController
             )
         }
+    }
+
+    /// Open (or bring forward) the History window (M7-T2). The view reads the
+    /// store through `settingsHub`, so opening before the pipeline assembled
+    /// shows the explanatory empty state.
+    private func openHistory() {
+        if historyWindow == nil {
+            let hosting = NSHostingController(
+                rootView: HistoryView().environmentObject(settingsHub)
+            )
+            let window = NSWindow(contentViewController: hosting)
+            window.title = "履歴"
+            window.setContentSize(NSSize(width: 640, height: 480))
+            window.isReleasedWhenClosed = false
+            window.center()
+            historyWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        historyWindow?.makeKeyAndOrderFront(nil)
+        Log.event("history_window_opened", category: .history)
     }
 
     /// Composition root: construct the provider clients, stores, and the
