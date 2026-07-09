@@ -38,19 +38,23 @@ public struct PipelineOutput: Sendable, Equatable {
 /// Hands the coordinator one utterance's live audio: ~40ms PCM16 chunks that
 /// finish when the mic stops (key-up or session cap). Streaming — not a
 /// materialized blob — so STT receives audio while the user is still speaking
-/// and key-up→final latency stays inside the §10.3 ladder.
+/// and key-up→final latency stays inside the §10.3 ladder. A mid-capture
+/// fault (device died, HAL error) must surface as a thrown stream error, NOT
+/// a plain `finish()`: a silent early end is indistinguishable from key-up
+/// and would insert a truncated utterance as success (invariant 1).
 public protocol AudioCapturing: Sendable {
-    func record(_ context: UtteranceContext) async throws -> AsyncStream<Data>
+    func record(_ context: UtteranceContext) async throws -> AsyncThrowingStream<Data, any Error>
 }
 
 /// Live audio → final transcript. Backed by an M4 `STTClient` adapter.
 public protocol Transcribing: Sendable {
-    /// `onRecordingEnded` fires exactly once, when the audio stream is
-    /// exhausted (mic stopped) — before the STT finals settle — so the
-    /// coordinator can advance the session state machine at true key-up time
-    /// rather than at transcript-complete time.
+    /// `onRecordingEnded` fires exactly once per utterance, before `transcribe`
+    /// returns or throws — normally at true end-of-speech (mic stream
+    /// exhausted), but also on early provider finalization and on failure — so
+    /// the coordinator can always advance the session state machine out of
+    /// `recording` regardless of which side ended the utterance.
     func transcribe(
-        _ audio: AsyncStream<Data>,
+        _ audio: AsyncThrowingStream<Data, any Error>,
         _ context: UtteranceContext,
         onRecordingEnded: @escaping @Sendable () async -> Void
     ) async throws -> String

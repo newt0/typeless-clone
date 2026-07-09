@@ -25,9 +25,9 @@ private actor Gate {
 }
 
 private struct PassthroughAudio: AudioCapturing {
-    func record(_ context: UtteranceContext) async throws -> AsyncStream<Data> {
+    func record(_ context: UtteranceContext) async throws -> AsyncThrowingStream<Data, any Error> {
         let data = Data("u\(context.index)".utf8)
-        return AsyncStream { continuation in
+        return AsyncThrowingStream { continuation in
             continuation.yield(data)
             continuation.finish()
         }
@@ -36,12 +36,12 @@ private struct PassthroughAudio: AudioCapturing {
 
 private struct EchoTranscriber: Transcribing {
     func transcribe(
-        _ audio: AsyncStream<Data>,
+        _ audio: AsyncThrowingStream<Data, any Error>,
         _ context: UtteranceContext,
         onRecordingEnded: @escaping @Sendable () async -> Void
     ) async throws -> String {
         var collected = Data()
-        for await chunk in audio { collected.append(chunk) }
+        for try await chunk in audio { collected.append(chunk) }
         await onRecordingEnded()
         return String(decoding: collected, as: UTF8.self)
     }
