@@ -24,9 +24,15 @@ final class StatusItemController {
     /// insertion path (M5-T2/T3) before the STT→format→paste pipeline is wired
     /// end-to-end. Each entry becomes a menu item.
     private let qaActions: [(title: String, run: () -> Void)]
+    /// Opens the History window (M7-T2).
+    private let onOpenHistory: () -> Void
 
-    init(qaActions: [(title: String, run: () -> Void)] = []) {
+    init(
+        qaActions: [(title: String, run: () -> Void)] = [],
+        onOpenHistory: @escaping () -> Void = {}
+    ) {
         self.qaActions = qaActions
+        self.onOpenHistory = onOpenHistory
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         applyIcon()
         statusItem.menu = buildMenu()
@@ -64,7 +70,8 @@ final class StatusItemController {
 
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
-        menu.addItem(withTitle: "History…", action: nil, keyEquivalent: "") // placeholder (M7)
+        let history = menu.addItem(withTitle: "History…", action: #selector(openHistory), keyEquivalent: "y")
+        history.target = self
 
         let settings = menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
@@ -100,6 +107,10 @@ final class StatusItemController {
         qaActions[sender.tag].run()
     }
     #endif
+
+    @objc private func openHistory() {
+        onOpenHistory()
+    }
 
     @objc private func openSettings() {
         NSApp.activate(ignoringOtherApps: true)

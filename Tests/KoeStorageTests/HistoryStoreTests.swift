@@ -130,4 +130,17 @@ struct HistoryStoreTests {
         #expect(rows[0].uuid == newID.uuidString)
         #expect(!rows.contains { $0.uuid == oldID.uuidString })
     }
+
+    @Test("feedback toggles on and off and survives reads (M7-T2)")
+    func feedbackRoundTrip() async throws {
+        let store = try HistoryStore.inMemory()
+        let ctx = UtteranceContext(index: 0)
+        let id = await store.recordFinalTranscript("フィードバック対象", ctx)
+        await store.updateFeedback(id, feedback: -1)
+        var record = try await store.recent().first
+        #expect(record?.feedback == -1)
+        await store.updateFeedback(id, feedback: nil)
+        record = try await store.recent().first
+        #expect(record?.feedback == nil)
+    }
 }

@@ -15,6 +15,9 @@ final class SettingsHub: ObservableObject {
     @Published var dictionaryStore: DictionaryStore?
     @Published var historyStore: HistoryStore?
     @Published var pipelineReady = false
+    /// Bumped when the History window (re)opens and when the pipeline becomes
+    /// ready — the view's `.task(id:)` reload key.
+    @Published var historyRefreshTick = 0
 
     /// Push the edited per-app override table into the inserter.
     var applyOverrides: ((InsertionOverrideTable) -> Void)?
