@@ -20,6 +20,7 @@ public protocol DictationUIObserving: Sendable {
     /// The utterance's insertion resolved.
     func utteranceLanded(_ context: UtteranceContext, result: InsertResult)
     /// The utterance failed at some stage (its transcript, if any, is in
-    /// history — invariant 1).
-    func utteranceFailed(_ context: UtteranceContext)
+    /// history — invariant 1). `recovery` is non-nil for an M4-T3 double-fault
+    /// whose audio was persisted: the HUD offers a retry for it.
+    func utteranceFailed(_ context: UtteranceContext, recovery: RecoveryHandle?)
 }

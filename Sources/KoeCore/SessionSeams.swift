@@ -84,4 +84,10 @@ public protocol HistoryWriting: Sendable {
     func updateFormatted(_ id: UUID, text: String) async
     /// Update the row with the final insertion outcome.
     func updateInsertResult(_ id: UUID, result: InsertResult) async
+    /// Record an utterance whose audio could not be transcribed at all (M4-T3
+    /// double-fault) — the audit trail behind the HUD retry button.
+    func recordUntranscribedSession(_ context: UtteranceContext) async -> UUID
+    /// Remove a row — used when a successful retry replaces its
+    /// untranscribed-session marker.
+    func deleteRecord(_ id: UUID) async
 }

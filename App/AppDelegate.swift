@@ -230,23 +230,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // dictionary editor — logged gap, decisions.md session 13). Partials
         // feed the HUD's live line only — never persisted or logged.
         let hud = hudController
-        let transcriber = STTTranscriber(
-            client: stt,
-            vocab: { (try? await dictionary.sttVocabulary()) ?? [] },
-            onPartial: { text, context in hud?.partial(text, context) }
+        let vocab: @Sendable () async -> [STTVocabTerm] = {
+            (try? await dictionary.sttVocabulary()) ?? []
+        }
+        // M4-T3 failure ladder: streaming (finals tail bounded by the 2s
+        // §10.3 leg) → one batch resend → persist WAV + HUD retry.
+        let transcriber = ResilientTranscriber(
+            streaming: STTTranscriber(
+                client: stt,
+                vocab: vocab,
+                onPartial: { text, context in hud?.partial(text, context) },
+                tailTimeout: KoeConstants.sttFinalTimeout
+            ),
+            batch: SpeechmaticsBatchClient(apiKey: sttKey),
+            store: TempAudioStore(),
+            vocab: vocab
         )
 
         let entries = (try? await dictionary.promptEntries()) ?? []
         let formatter = LLMFormatter(client: llmClient, dictionary: entries)
-        coordinator = SessionCoordinator(
+        let coordinator = SessionCoordinator(
             audio: audioSource,
             stt: transcriber,
             formatter: formatter,
             inserter: inserter,
             history: history,
             focus: focus,
-            ui: hud
+            ui: hud,
+            recovery: transcriber
         )
+        self.coordinator = coordinator
+        hud?.onRetry = { handle in
+            Log.event("hud_retry_pressed", category: .session)
+            Task { await coordinator.startRetry(handle) }
+        }
         Log.event("pipeline_ready", category: .session)
     }
 }

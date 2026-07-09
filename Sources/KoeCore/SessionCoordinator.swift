@@ -1,9 +1,16 @@
 import Foundation
 
-/// Final disposition of one dictation.
+/// Final disposition of one dictation. A failure carries the M4-T3 recovery
+/// handle when the utterance's audio survived a double-fault (HUD retry).
 public enum DictationOutcome: Sendable, Equatable {
     case completed(InsertResult)
-    case failed
+    case failed(recovery: RecoveryHandle?)
+}
+
+/// Re-runs the batch STT leg from persisted audio (M4-T3 HUD retry). The app
+/// composes ``ResilientTranscriber`` behind this.
+public protocol RecoveryRetrying: Sendable {
+    func retryTranscribe(audioID: String) async throws -> String
 }
 
 /// Orchestrates one dictation per hotkey press (Design §7.2, §10.4; plan M1-T2).
@@ -25,6 +32,8 @@ public actor SessionCoordinator {
     private let logger: DictationEventLogger
     /// UI observation seam (M9 HUD); `nil` = headless (tests, no UI yet).
     private let ui: (any DictationUIObserving)?
+    /// Batch retry seam (M4-T3); `nil` = retry unavailable.
+    private let recovery: (any RecoveryRetrying)?
 
     public init(
         audio: AudioCapturing,
@@ -34,6 +43,7 @@ public actor SessionCoordinator {
         history: HistoryWriting,
         focus: ContextProviding,
         ui: (any DictationUIObserving)? = nil,
+        recovery: (any RecoveryRetrying)? = nil,
         serializer: InsertionSerializer = InsertionSerializer(),
         now: @escaping @Sendable () -> Date = { Date() },
         logger: DictationEventLogger = NoopDictationEventLogger()
@@ -45,6 +55,7 @@ public actor SessionCoordinator {
         self.history = history
         self.focus = focus
         self.ui = ui
+        self.recovery = recovery
         self.serializer = serializer
         self.now = now
         self.logger = logger
@@ -76,38 +87,47 @@ public actor SessionCoordinator {
         return Task { await self.run(context) }
     }
 
-    private func run(_ context: UtteranceContext) async -> DictationOutcome {
-        let session = DictationSession(now: now, logger: logger)
-        ui?.utteranceBegan(context, states: session.states)
-        let outcome = await runStages(session, context)
-        switch outcome {
-        case .completed(let result):
-            ui?.utteranceLanded(context, result: result)
-        case .failed:
-            ui?.utteranceFailed(context)
+    /// Retry an unrecovered utterance from its persisted audio (M4-T3 HUD
+    /// retry button). Reserves a fresh FIFO ticket; on success the
+    /// untranscribed-session marker row is replaced by the real transcript row
+    /// and the stored audio is deleted (by ``RecoveryRetrying``). On failure
+    /// the same handle is surfaced again, so retry stays available.
+    @discardableResult
+    public func startRetry(_ handle: RecoveryHandle) async -> Task<DictationOutcome, Never> {
+        async let bundleID = focus.frontmostBundleID()
+        let context = UtteranceContext(
+            index: await serializer.reserve(),
+            recordingBundleID: await bundleID
+        )
+        return Task {
+            await self.run(context) { session in
+                guard let recovery = self.recovery else { throw UnrecoveredUtterance(audioID: nil) }
+                // Synthetic transitions: there is no live mic for a retry, but
+                // the lifecycle (and its observers) stay uniform.
+                try await session.startRecording()
+                try await session.endRecording()
+                let transcript = try await recovery.retryTranscribe(audioID: handle.audioID)
+                await self.history.deleteRecord(handle.historyID)
+                return transcript
+            } failureRecovery: { error in
+                // Keep the SAME handle alive unless the audio itself is gone.
+                if let unrecovered = error as? UnrecoveredUtterance, unrecovered.audioID == nil {
+                    return nil
+                }
+                return handle
+            }
         }
-        // Release the FIFO slot exactly once, in ticket order, on every path —
-        // so a cancelled/failed utterance never blocks the ones behind it
-        // (invariant 1 / §10.4). If the stages never reached insertion, this
-        // waits for this ticket's turn before releasing; otherwise `waitTurn`
-        // returns immediately since the ticket is already being served.
-        await serializer.waitTurn(context.index)
-        await serializer.complete(context.index)
-        return outcome
     }
 
-    private func runStages(
-        _ session: DictationSession,
-        _ context: UtteranceContext
-    ) async -> DictationOutcome {
-        do {
+    private func run(_ context: UtteranceContext) async -> DictationOutcome {
+        await run(context) { session in
             try await session.startRecording()
-            let audioStream = try await audio.record(context)
+            let audioStream = try await self.audio.record(context)
             // Chunks flow to STT while the user is still speaking; the callback
             // fires when the mic stream is exhausted (key-up / session cap) so
             // the state machine leaves `recording` at true end-of-speech, not
             // at transcript-complete.
-            let transcript = try await stt.transcribe(audioStream, context) {
+            return try await self.stt.transcribe(audioStream, context) {
                 do {
                     try await session.endRecording()
                 } catch {
@@ -117,6 +137,31 @@ public actor SessionCoordinator {
                     Log.error("end_recording_illegal", category: .session)
                 }
             }
+        } failureRecovery: { error in
+            guard let unrecovered = error as? UnrecoveredUtterance,
+                  let audioID = unrecovered.audioID else { return nil }
+            // The audio survived the double-fault: record the audit row and
+            // hand the HUD a retry (M4-T3).
+            let historyID = await self.history.recordUntranscribedSession(context)
+            return RecoveryHandle(audioID: audioID, historyID: historyID)
+        }
+    }
+
+    /// Shared lifecycle for live utterances and retries: `transcribe` yields
+    /// the final transcript (driving the session's recording transitions);
+    /// everything from write-ahead through insertion is identical.
+    /// `failureRecovery` maps a stage error to the retry handle surfaced with
+    /// the failure (`nil` = not retryable).
+    private func run(
+        _ context: UtteranceContext,
+        transcribe: (DictationSession) async throws -> String,
+        failureRecovery: (any Error) async -> RecoveryHandle?
+    ) async -> DictationOutcome {
+        let session = DictationSession(now: now, logger: logger)
+        ui?.utteranceBegan(context, states: session.states)
+        let outcome: DictationOutcome
+        do {
+            let transcript = try await transcribe(session)
             try await session.receiveFinalTranscript(transcript)
             // Write-ahead: the raw transcript is now durable regardless of what
             // fails downstream (Design §10.1).
@@ -132,12 +177,26 @@ public actor SessionCoordinator {
             await history.updateInsertResult(historyID, result: result)
             try await session.completeInsertion(result: result)
             try await session.finish()
-            return .completed(result)
+            outcome = .completed(result)
         } catch {
             // No body text (invariant 4); stage-specific detail is logged where
             // the failure originates (STT/LLM/insertion adapters).
             Log.error("utterance_failed", category: .session)
-            return .failed
+            outcome = .failed(recovery: await failureRecovery(error))
         }
+        switch outcome {
+        case .completed(let result):
+            ui?.utteranceLanded(context, result: result)
+        case .failed(let recovery):
+            ui?.utteranceFailed(context, recovery: recovery)
+        }
+        // Release the FIFO slot exactly once, in ticket order, on every path —
+        // so a cancelled/failed utterance never blocks the ones behind it
+        // (invariant 1 / §10.4). If the stages never reached insertion, this
+        // waits for this ticket's turn before releasing; otherwise `waitTurn`
+        // returns immediately since the ticket is already being served.
+        await serializer.waitTurn(context.index)
+        await serializer.complete(context.index)
+        return outcome
     }
 }

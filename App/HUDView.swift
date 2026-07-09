@@ -5,6 +5,8 @@ import KoeCore
 @MainActor
 final class HUDModelStore: ObservableObject {
     @Published var model: HUDModel = .hidden
+    /// M4-T3 retry button action; wired by the controller.
+    var onRetry: ((RecoveryHandle) -> Void)?
 }
 
 /// Pure projection of ``HUDModel`` (Design §7.5): a translucent capsule at the
@@ -60,10 +62,15 @@ struct HUDView: View {
                 Image(systemName: "lock.fill")
                 Text("セキュア入力中のため挿入しません")
             }
-        case .failed:
+        case .failed(let recovery):
             HStack(spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
                 Text("音声を処理できませんでした")
+                if let recovery {
+                    Button("再試行") { store.onRetry?(recovery) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
             }
         }
     }

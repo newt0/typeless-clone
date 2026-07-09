@@ -74,6 +74,12 @@ public enum KoeConstants {
     /// utterance behind it. The recording leg itself is unbounded by design
     /// (capped upstream by `maxSessionRecording`).
     public static let sttStallTimeout: Duration = .seconds(30)
+    /// Total bound on one batch resend (submit → poll → transcript). Batch
+    /// jobs queue server-side, so this is generous; the utterance already
+    /// missed its latency budget — correctness beats speed here. [tune]
+    public static let sttBatchResendTimeout: Duration = .seconds(120)
+    /// Poll cadence for the batch job status.
+    public static let sttBatchPollInterval: Duration = .seconds(2)
     /// LLM time-to-first-token; exceeding triggers one retry then degradation.
     public static let llmTTFTTimeout: Duration = .milliseconds(1500)
     /// LLM total generation (per chunk when split); exceeding degrades to raw.
@@ -89,4 +95,6 @@ public enum KoeConstants {
     public static let hudClipboardDwell: Duration = .seconds(4)
     /// Secure-block / failure / side-notice dwell.
     public static let hudNoticeDwell: Duration = .milliseconds(2500)
+    /// Dwell for a retryable failure (M4-T3): long enough to reach the button.
+    public static let hudRetryDwell: Duration = .seconds(10)
 }

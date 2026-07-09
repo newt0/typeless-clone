@@ -35,8 +35,9 @@ public struct HUDModel: Sendable, Equatable {
         /// Secure input context: nothing inserted, clipboard untouched.
         case secureBlocked
         /// The utterance failed end-to-end (its transcript, if any, is in
-        /// history).
-        case failed
+        /// history). `recovery` non-nil = M4-T3 double-fault with persisted
+        /// audio: the view offers a retry button for it.
+        case failed(recovery: RecoveryHandle?)
     }
 
     public var phase: Phase
@@ -69,8 +70,9 @@ public enum HUDEvent: Sendable, Equatable {
     case partial(utterance: Int, String)
     /// An utterance's insertion landed with this result.
     case landed(utterance: Int, InsertResult)
-    /// An utterance failed (any stage).
-    case failed(utterance: Int)
+    /// An utterance failed (any stage); `recovery` non-nil = retryable
+    /// double-fault (M4-T3).
+    case failed(utterance: Int, recovery: RecoveryHandle?)
     case notice(HUDNotice)
     /// The phase dwell timer elapsed (scheduled per ``HUDReducer/phaseDwell(_:)``).
     case phaseDismissFired
@@ -135,10 +137,14 @@ public enum HUDReducer {
                 }
             }
 
-        case .failed(let utterance):
+        case .failed(let utterance, let recovery):
             if utterance == next.currentUtterance {
-                next.phase = .failed
+                next.phase = .failed(recovery: recovery)
             } else {
+                // The notice line can't host a button; a stale retryable
+                // failure keeps its history row (and, within the session, the
+                // stored audio) but loses the one-tap retry — documented P0
+                // trade-off.
                 next.notice = .staleFailed
             }
 
@@ -165,8 +171,13 @@ public enum HUDReducer {
             return KoeConstants.hudDoneDwell
         case .clipboardFallback:
             return KoeConstants.hudClipboardDwell
-        case .secureBlocked, .failed:
+        case .secureBlocked, .failed(recovery: nil):
             return KoeConstants.hudNoticeDwell
+        case .failed:
+            // A retry button that vanishes in 2.5s is unusable; give the user
+            // time to reach it (the failure stays retryable from history
+            // anyway once M7-T2 ships).
+            return KoeConstants.hudRetryDwell
         }
     }
 
