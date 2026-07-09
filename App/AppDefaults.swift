@@ -22,4 +22,7 @@ enum AppDefaultsKey {
     static let insertionOverrides = "insertionOverrides"
     /// Onboarding finished (M11-T1). Absent ⇒ first run → show onboarding.
     static let onboardingCompleted = "onboardingCompleted"
+    /// Unix timestamp of the affirmative APPI consent (M11-T1 step 1; R10 —
+    /// skip and consent must be distinguishable). Absent ⇒ not consented.
+    static let privacyConsentedAt = "privacyConsentedAt"
 }

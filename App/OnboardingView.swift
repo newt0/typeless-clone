@@ -16,7 +16,10 @@ struct OnboardingView: View {
     @State private var axTrusted = AXIsProcessTrusted()
     @State private var tapArmFailed = false
     @State private var testText = ""
+    @State private var testInsertDetected = false
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var loginItemError = false
+    @State private var relaunchFailed = false
 
     private let stepTitles = ["ようこそ", "マイク", "アクセシビリティ", "ホットキー", "テスト入力", "完了"]
 
@@ -51,10 +54,21 @@ struct OnboardingView: View {
                 }
                 Spacer()
                 if step < 5 {
-                    Button("スキップ") { advance() }
-                        .buttonStyle(.borderless)
-                    Button(step == 0 ? "同意して開始" : "次へ") { advance() }
-                        .keyboardShortcut(.defaultAction)
+                    if step > 0 {
+                        // Step 0 is the APPI consent — deliberately NOT
+                        // skippable, and consent is persisted+logged so a skip
+                        // can never masquerade as consent (review finding, R10).
+                        Button("スキップ") { advance() }
+                            .buttonStyle(.borderless)
+                    }
+                    Button(step == 0 ? "同意して開始" : "次へ") {
+                        if step == 0 {
+                            AppSettings.privacyConsentedAt = Date()
+                            Log.event("privacy_consented", category: .app)
+                        }
+                        advance()
+                    }
+                    .keyboardShortcut(.defaultAction)
                 } else {
                     Button("完了") {
                         AppSettings.onboardingCompleted = true
@@ -122,6 +136,10 @@ struct OnboardingView: View {
                 Text("権限は付与されましたが、ホットキーの有効化に失敗しました。アプリを再起動すると解消されます（macOS の既知の挙動）。")
                     .font(.callout).foregroundStyle(.orange)
                 Button("再起動して続行") { relaunch() }
+                if relaunchFailed {
+                    Text("自動再起動に失敗しました。お手数ですが手動で Koe を終了し、開き直してください。")
+                        .font(.caption).foregroundStyle(.red)
+                }
             }
         }
     }
@@ -153,9 +171,19 @@ struct OnboardingView: View {
             TextField("ここに結果が入力されます", text: $testText, axis: .vertical)
                 .lineLimit(3...6)
                 .textFieldStyle(.roundedBorder)
-            if !testText.isEmpty {
+                .onChange(of: testText) { previous, current in
+                    // A real dictation lands as ONE multi-character paste;
+                    // hand-typed characters arrive one per change. Only the
+                    // burst counts as pipeline-verified (review finding —
+                    // typing a word by hand must not claim STT/LLM/挿入 work).
+                    if current.count - previous.count >= 4 { testInsertDetected = true }
+                }
+            if testInsertDetected {
                 Label("成功！認識・整形・挿入のすべてが動いています。", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
+            } else if !testText.isEmpty {
+                Text("手入力ではなくホットキーでの入力を確認してください。")
+                    .font(.caption).foregroundStyle(.orange)
             } else if !hub.pipelineReady {
                 Text("パイプライン初期化中です。API キーが未設定の場合は設定 > APIキー から登録してください。")
                     .font(.caption).foregroundStyle(.orange)
@@ -174,8 +202,19 @@ struct OnboardingView: View {
             .font(.callout)
             Toggle("ログイン時に Koe を起動", isOn: $launchAtLogin)
                 .onChange(of: launchAtLogin) { _, on in
-                    try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
+                    do {
+                        if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+                        loginItemError = false
+                    } catch {
+                        Log.error("login_item_toggle_failed", category: .app)
+                        loginItemError = true
+                        launchAtLogin = SMAppService.mainApp.status == .enabled
+                    }
                 }
+            if loginItemError {
+                Text("ログイン項目を変更できませんでした。システム設定 > 一般 > ログイン項目 から変更してください。")
+                    .font(.caption).foregroundStyle(.red)
+            }
         }
     }
 
@@ -244,7 +283,12 @@ struct OnboardingView: View {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         process.arguments = ["-n", path]
-        try? process.run()
-        NSApp.terminate(nil)
+        do {
+            try process.run()
+            NSApp.terminate(nil) // only after the relauncher actually spawned
+        } catch {
+            Log.error("onboarding_relaunch_failed", category: .app)
+            relaunchFailed = true
+        }
     }
 }

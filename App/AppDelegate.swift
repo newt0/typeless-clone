@@ -168,7 +168,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self, let tap = self.hotkeyTap else { return false }
             if enabled {
                 let started = tap.start()
-                if !started { self.statusItemController?.setPermissionWarning(true) }
+                // A successful (re-)arm proves Accessibility: clear the
+                // latched ⚠︎ from the failed launch attempt (review finding —
+                // first-run users otherwise finish onboarding with a working
+                // hotkey and a permanent warning icon).
+                self.statusItemController?.setPermissionWarning(!started)
                 return started
             } else {
                 tap.disable()
@@ -230,18 +234,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Open (or bring forward) the onboarding window (M11-T1); also the menu's
     /// "セットアップをやり直す" entry.
     private func openOnboarding() {
-        if onboardingWindow == nil {
-            let hosting = NSHostingController(
-                rootView: OnboardingView().environmentObject(settingsHub)
-            )
-            let window = NSWindow(contentViewController: hosting)
-            window.title = "Koe セットアップ"
-            window.isReleasedWhenClosed = false
-            window.center()
-            onboardingWindow = window
-        }
+        // Always a fresh view: reusing the cached window kept the old @State
+        // (step, permission flags), so「セットアップをやり直す」reopened on the
+        // finished screen instead of restarting (review finding).
+        onboardingWindow?.close()
+        let hosting = NSHostingController(
+            rootView: OnboardingView().environmentObject(settingsHub)
+        )
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Koe セットアップ"
+        window.isReleasedWhenClosed = false
+        window.center()
+        onboardingWindow = window
         NSApp.activate(ignoringOtherApps: true)
-        onboardingWindow?.makeKeyAndOrderFront(nil)
+        window.makeKeyAndOrderFront(nil)
         Log.event("onboarding_opened", category: .app)
     }
 

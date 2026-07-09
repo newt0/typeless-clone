@@ -41,6 +41,14 @@ enum AppSettings {
         set { defaults.set(newValue, forKey: AppDefaultsKey.fnHotkeyEnabled) }
     }
 
+    static var privacyConsentedAt: Date? {
+        get {
+            let value = defaults.double(forKey: AppDefaultsKey.privacyConsentedAt)
+            return value > 0 ? Date(timeIntervalSince1970: value) : nil
+        }
+        set { defaults.set(newValue?.timeIntervalSince1970 ?? 0, forKey: AppDefaultsKey.privacyConsentedAt) }
+    }
+
     static var onboardingCompleted: Bool {
         get { defaults.bool(forKey: AppDefaultsKey.onboardingCompleted) }
         set { defaults.set(newValue, forKey: AppDefaultsKey.onboardingCompleted) }
