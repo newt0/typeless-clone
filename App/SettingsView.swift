@@ -38,15 +38,31 @@ private struct GeneralSettingsTab: View {
     @State private var telemetryOptOut = AppSettings.telemetryOptOut
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginItemError = false
+    @State private var revertingLogin = false
+    @State private var fnError = false
+    @State private var revertingFn = false
 
     var body: some View {
         Form {
             Section("ホットキー") {
                 Toggle("Fn キー長押しで入力", isOn: $fnEnabled)
-                    .onChange(of: fnEnabled) { _, on in
-                        AppSettings.fnHotkeyEnabled = on
-                        hub.applyFnEnabled?(on)
+                    .onChange(of: fnEnabled) { previous, on in
+                        guard !revertingFn else { revertingFn = false; return }
+                        if hub.applyFnEnabled?(on) ?? false {
+                            AppSettings.fnHotkeyEnabled = on
+                            fnError = false
+                        } else if on {
+                            // Accessibility missing: revert visibly instead of
+                            // showing an ON toggle for a dead hotkey.
+                            fnError = true
+                            revertingFn = true
+                            fnEnabled = previous
+                        }
                     }
+                if fnError {
+                    Text("アクセシビリティ権限がないため有効化できません。システム設定 > プライバシーとセキュリティ > アクセシビリティ で Koe を許可してください。")
+                        .font(.caption).foregroundStyle(.red)
+                }
                 KeyboardShortcuts.Recorder("代替ホットキー（押している間入力）:", name: .dictation)
             }
             Section("整形") {
@@ -80,13 +96,20 @@ private struct GeneralSettingsTab: View {
                     .onChange(of: telemetryOptOut) { _, on in AppSettings.telemetryOptOut = on }
                 Toggle("ログイン時に起動", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, on in
+                        // A programmatic revert must not re-enter this handler
+                        // and clear the error it just set (review finding).
+                        guard !revertingLogin else { revertingLogin = false; return }
                         do {
                             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
                             loginItemError = false
                         } catch {
                             Log.error("login_item_toggle_failed", category: .app)
                             loginItemError = true
-                            launchAtLogin = SMAppService.mainApp.status == .enabled
+                            let actual = SMAppService.mainApp.status == .enabled
+                            if actual != on {
+                                revertingLogin = true
+                                launchAtLogin = actual
+                            }
                         }
                     }
                 if loginItemError {
@@ -142,7 +165,10 @@ private struct DictionarySettingsTab: View {
             }
         }
         .padding()
-        .task { await reload() }
+        // Keyed on pipeline readiness: the store opens asynchronously after
+        // launch, and a one-shot .task that ran too early left the list empty
+        // forever (review finding).
+        .task(id: hub.pipelineReady) { await reload() }
     }
 
     private func reload() async {
@@ -250,6 +276,9 @@ private struct APIKeysSettingsTab: View {
     @State private var speechmaticsKey = ""
     @State private var geminiKey = ""
     @State private var savedNote: String?
+    /// Presence probed once per appearance — a Keychain read is a securityd
+    /// IPC and must not run on every keystroke (review finding).
+    @State private var present: [SecretKey: Bool] = [:]
 
     var body: some View {
         Form {
@@ -268,11 +297,15 @@ private struct APIKeysSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+        .task {
+            present[.speechmaticsAPIKey] = hub.secrets.read(.speechmaticsAPIKey) != nil
+            present[.geminiAPIKey] = hub.secrets.read(.geminiAPIKey) != nil
+        }
     }
 
     @ViewBuilder
     private func keyRow(key: SecretKey, text: Binding<String>) -> some View {
-        let present = hub.secrets.read(key) != nil
+        let present = self.present[key] ?? false
         HStack {
             SecureField(present ? "設定済み（変更する場合のみ入力）" : "APIキーを入力", text: text)
             Button("保存") {
@@ -280,6 +313,7 @@ private struct APIKeysSettingsTab: View {
                 guard !value.isEmpty else { return }
                 if hub.secrets.write(value, for: key) {
                     text.wrappedValue = ""
+                    self.present[key] = true
                     savedNote = "保存しました。反映にはアプリの再起動が必要です。"
                     Log.event("api_key_saved", category: .app)
                 } else {

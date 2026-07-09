@@ -18,6 +18,7 @@ final class SettingsHub: ObservableObject {
 
     /// Push the edited per-app override table into the inserter.
     var applyOverrides: ((InsertionOverrideTable) -> Void)?
-    /// Start/stop the Fn tap live.
-    var applyFnEnabled: ((Bool) -> Void)?
+    /// Start/stop the Fn tap live; returns whether the change took effect
+    /// (false = Accessibility missing — the toggle reverts).
+    var applyFnEnabled: ((Bool) -> Bool)?
 }

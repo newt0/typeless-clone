@@ -97,22 +97,14 @@ final class PasteSimulator: TextInserting {
 
         case .proceed where forceClipboardLanding:
             Log.event("insert_clipboard_degraded_setting", category: .insertion)
-            let prepared = PasteTextPreparer.prepare(text, targetBundleID: facts.frontmostBundleID).text
-            if !putMarkedText(prepared.isEmpty ? text : prepared, on: NSPasteboard.general) {
-                Log.error("paste_clipboard_write_failed", category: .insertion)
-            }
-            return .clipboardFallback
+            return clipboardLanding(text, targetBundleID: facts.frontmostBundleID)
 
         case .clipboardHold:
             // Frontmost app changed since recording: don't paste into the wrong
             // window — leave the marked text for the user to ⌘V (Design §6.3-1).
             // This is the path-3 landing, decided up front by the preflight.
             Log.event("insert_clipboard_hold_app_changed", category: .insertion)
-            let prepared = PasteTextPreparer.prepare(text, targetBundleID: facts.frontmostBundleID).text
-            if !putMarkedText(prepared, on: NSPasteboard.general) {
-                Log.error("paste_clipboard_write_failed", category: .insertion)
-            }
-            return .clipboardFallback
+            return clipboardLanding(text, targetBundleID: facts.frontmostBundleID)
 
         case .proceed:
             let override = overrides.override(for: facts.frontmostBundleID)
@@ -123,6 +115,20 @@ final class PasteSimulator: TextInserting {
                 targetBundleID: facts.frontmostBundleID
             )
         }
+    }
+
+    /// Shared clipboard landing (app-changed hold + degraded-output setting):
+    /// prepare, fall back to the raw text when preparation strips everything,
+    /// and never clobber the user's clipboard for an empty payload (review
+    /// finding — an empty degraded utterance wiped the clipboard).
+    private func clipboardLanding(_ text: String, targetBundleID: String?) -> InsertResult {
+        let prepared = PasteTextPreparer.prepare(text, targetBundleID: targetBundleID).text
+        let payload = prepared.isEmpty ? text : prepared
+        guard !payload.isEmpty else { return .pasted } // nothing to keep
+        if !putMarkedText(payload, on: NSPasteboard.general) {
+            Log.error("paste_clipboard_write_failed", category: .insertion)
+        }
+        return .clipboardFallback
     }
 
     /// Set the re-entrancy guard. Returns `false` (and logs) if an insertion is

@@ -144,17 +144,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onStop: onStop,
             onRevoked: { statusItemController.setPermissionWarning(true) }
         )
-        if AppSettings.fnHotkeyEnabled, !tap.start() {
-            // Accessibility not granted yet: surface ⚠︎ instead of crashing.
+        if AppSettings.fnHotkeyEnabled {
+            if !tap.start() {
+                // Accessibility not granted yet: surface ⚠︎ instead of crashing.
+                statusItemController.setPermissionWarning(true)
+            }
+        } else if !AXIsProcessTrusted() {
+            // The tap used to be the app's only AX probe; keep the ⚠︎ honest
+            // even with the Fn hotkey switched off (paste/AX reads still need
+            // the permission — review finding).
+            Log.event("hotkey_ax_untrusted", category: .permission)
             statusItemController.setPermissionWarning(true)
         }
         self.hotkeyTap = tap
-        settingsHub.applyFnEnabled = { [weak self] enabled in
-            guard let self, let tap = self.hotkeyTap else { return }
+        settingsHub.applyFnEnabled = { [weak self] enabled -> Bool in
+            guard let self, let tap = self.hotkeyTap else { return false }
             if enabled {
-                if !tap.start() { self.statusItemController?.setPermissionWarning(true) }
+                let started = tap.start()
+                if !started { self.statusItemController?.setPermissionWarning(true) }
+                return started
             } else {
-                tap.stop()
+                tap.disable()
+                return true
             }
         }
 

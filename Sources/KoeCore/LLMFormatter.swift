@@ -57,22 +57,24 @@ public struct LLMFormatter: Formatting {
     }
 
     public func format(_ transcript: String, _ context: UtteranceContext) async throws -> PipelineOutput {
-        // App context comes from the utterance itself (captured at press time),
-        // not a live read: a live closure would race overlapping utterances and
-        // could name the wrong app after a mid-pipeline app switch.
-        let prompt = assembler.assemble(
-            transcript: transcript,
-            style: style(),
-            dictionary: await dictionary(),
-            frontmostApp: context.recordingBundleID
-        )
         do {
-            // Bound the request by the §10.3 total-time leg (the TTFT/retry leg
-            // needs token streaming and lands with it). On timeout the in-flight
-            // request is cancelled and the caller degrades (invariant 2).
+            // Bound dictionary fetch + assembly + request by the §10.3
+            // total-time leg — the dictionary provider is a DB read that can
+            // stall behind a concurrent Settings edit, and it must not push
+            // the utterance past the bound (review finding). App context
+            // comes from the utterance itself (captured at press time).
             let client = self.client
+            let assembler = self.assembler
+            let style = self.style
+            let dictionary = self.dictionary
             let raw = try await Deadline.run(timeout, onTimeout: { LLMError.timeout }) {
-                try await client.complete(system: prompt.system, user: prompt.user)
+                let prompt = assembler.assemble(
+                    transcript: transcript,
+                    style: style(),
+                    dictionary: await dictionary(),
+                    frontmostApp: context.recordingBundleID
+                )
+                return try await client.complete(system: prompt.system, user: prompt.user)
             }
             switch validator.validate(raw: transcript, formatted: raw) {
             case .accept(let text):
