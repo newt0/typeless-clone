@@ -14,6 +14,7 @@ final class SettingsHub: ObservableObject {
     /// nil until the pipeline assembled (stores unavailable → tabs explain).
     @Published var dictionaryStore: DictionaryStore?
     @Published var historyStore: HistoryStore?
+    @Published var metricsStore: MetricsStore?
     @Published var pipelineReady = false
     /// Bumped when the History window (re)opens and when the pipeline becomes
     /// ready — the view's `.task(id:)` reload key.

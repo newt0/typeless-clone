@@ -318,17 +318,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let secrets = KeychainSecretStore()
         let sttKeyTask = Task.detached { secrets.read(.speechmaticsAPIKey) }
         let geminiKeyTask = Task.detached { secrets.read(.geminiAPIKey) }
+        let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("dev.newt.Koe", isDirectory: true)
         let storesTask = Task.detached { () -> Result<(HistoryStore, DictionaryStore), any Error> in
             do {
-                let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                    .appendingPathComponent("dev.newt.Koe", isDirectory: true)
-                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                let history = try HistoryStore(path: dir.appendingPathComponent("history.sqlite").path)
-                let dictionary = try DictionaryStore(path: dir.appendingPathComponent("dictionary.sqlite").path)
+                try FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+                let history = try HistoryStore(path: supportDir.appendingPathComponent("history.sqlite").path)
+                let dictionary = try DictionaryStore(path: supportDir.appendingPathComponent("dictionary.sqlite").path)
                 return .success((history, dictionary))
             } catch {
                 return .failure(error)
             }
+        }
+        // Metrics is optional/opt-outable: its open runs in parallel and its
+        // failure must never block dictation (review finding — only the
+        // history write-ahead justifies a hard block).
+        let metricsTask = Task.detached { () -> MetricsStore? in
+            try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+            return try? MetricsStore(path: supportDir.appendingPathComponent("metrics.sqlite").path)
         }
 
         // Stores live in Application Support. Without the history DB the
@@ -350,6 +357,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.dictionaryStore = dictionary
         settingsHub.historyStore = history
         settingsHub.dictionaryStore = dictionary
+        let metricsStore = await metricsTask.value
+        if metricsStore == nil { Log.error("config_metrics_open_failed", category: .history) }
+        settingsHub.metricsStore = metricsStore
         // M10 retention setting, applied at launch (M7-T2 spec).
         let retentionDays = AppSettings.historyRetentionDays
         if retentionDays > 0 {
@@ -371,11 +381,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // fails instantly and LLMFormatter degrades to the raw transcript
         // (invariant 2) — strictly better than blocking.
         let llmClient: any LLMClient
+        let llmProvider: String
         if let geminiKey = await geminiKeyTask.value {
             llmClient = GeminiClient(apiKey: geminiKey)
+            llmProvider = "speechmatics+gemini"
         } else {
             Log.error("config_missing_llm_key", category: .app)
             llmClient = MissingKeyLLMClient()
+            llmProvider = "speechmatics" // no LLM key: every output degrades to raw
         }
 
         // STT vocabulary is fetched fresh per utterance; the LLM prompt
@@ -415,7 +428,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             history: history,
             focus: focus,
             ui: hud,
-            recovery: transcriber
+            recovery: transcriber,
+            metrics: metricsStore.map { AppMetricsRecorder(store: $0, provider: llmProvider) }
         )
         self.coordinator = coordinator
         hud?.onRetry = { [weak self] handle in
@@ -427,6 +441,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsHub.pipelineReady = true
         settingsHub.historyRefreshTick += 1
         Log.event("pipeline_ready", category: .session)
+    }
+}
+
+/// Local metrics sink (M10-T2): honors the Settings opt-out per sample and
+/// stamps the prompt/provider identifiers the pure sample doesn't know.
+private struct AppMetricsRecorder: MetricsRecording {
+    let store: MetricsStore
+    /// Actual provider composition (review finding: a missing Gemini key must
+    /// not be recorded as if Gemini formatted the text).
+    let provider: String
+    func record(_ sample: DictationSample) async {
+        // Checked per sample so the Settings toggle applies live; the
+        // remaining per-utterance cost when opted out (two actor reads + a
+        // task spawn) is accepted for that (decisions.md).
+        guard !AppSettings.telemetryOptOut else { return }
+        await store.record(
+            sample,
+            promptVersion: PromptTemplate.current.version,
+            provider: provider
+        )
     }
 }
 
