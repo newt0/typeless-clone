@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Live bridge into the Settings scene (M10-T1).
     let settingsHub = SettingsHub()
     private var historyWindow: NSWindow?
+    private var onboardingWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Agent app: no Dock icon, no app switcher (paired with LSUIElement).
@@ -73,7 +74,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
         let statusItemController = StatusItemController(
             qaActions: qaActions,
-            onOpenHistory: { [weak self] in self?.openHistory() }
+            onOpenHistory: { [weak self] in self?.openHistory() },
+            onOpenOnboarding: { [weak self] in self?.openOnboarding() }
         )
         self.statusItemController = statusItemController
         Log.event("app_launched", category: .app)
@@ -166,7 +168,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self, let tap = self.hotkeyTap else { return false }
             if enabled {
                 let started = tap.start()
-                if !started { self.statusItemController?.setPermissionWarning(true) }
+                // A successful (re-)arm proves Accessibility: clear the
+                // latched ⚠︎ from the failed launch attempt (review finding —
+                // first-run users otherwise finish onboarding with a working
+                // hotkey and a permanent warning icon).
+                self.statusItemController?.setPermissionWarning(!started)
                 return started
             } else {
                 tap.disable()
@@ -179,6 +185,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alt = AltHotkeyMonitor(onStart: onStart, onStop: onStop)
         alt.start()
         self.altHotkey = alt
+
+        // First run: walk the user to a working dictation (M11-T1). Shown
+        // after the hotkeys are wired so the test-dictation step works the
+        // moment the pipeline is ready.
+        if !AppSettings.onboardingCompleted {
+            openOnboarding()
+        }
 
         // The real pipeline (E2E wiring PR-B): press → audio → Speechmatics →
         // Gemini formatting → paste, with write-ahead history. Assembled AFTER
@@ -216,6 +229,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         historyWindow?.makeKeyAndOrderFront(nil)
         settingsHub.historyRefreshTick += 1
         Log.event("history_window_opened", category: .history)
+    }
+
+    /// Open (or bring forward) the onboarding window (M11-T1); also the menu's
+    /// "セットアップをやり直す" entry.
+    private func openOnboarding() {
+        // Always a fresh view: reusing the cached window kept the old @State
+        // (step, permission flags), so「セットアップをやり直す」reopened on the
+        // finished screen instead of restarting (review finding).
+        onboardingWindow?.close()
+        let hosting = NSHostingController(
+            rootView: OnboardingView().environmentObject(settingsHub)
+        )
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Koe セットアップ"
+        window.isReleasedWhenClosed = false
+        window.center()
+        onboardingWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        Log.event("onboarding_opened", category: .app)
     }
 
     /// Composition root: construct the provider clients, stores, and the
