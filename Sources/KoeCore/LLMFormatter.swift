@@ -11,8 +11,11 @@ public struct LLMFormatter: Formatting {
     private let client: LLMClient
     private let assembler: PromptAssembler
     private let validator: OutputValidator
-    private let style: WritingStyle
-    private let dictionary: [DictionaryEntry]
+    /// Style and dictionary are providers, read per format call, so Settings
+    /// changes (M10) apply to the next utterance without rebuilding the
+    /// pipeline.
+    private let style: @Sendable () -> WritingStyle
+    private let dictionary: @Sendable () async -> [DictionaryEntry]
     /// Total-time bound on one LLM request (Design §10.3 ladder); exceeding it
     /// degrades to the raw transcript instead of waiting out URLSession's own
     /// (much longer) timeout. Injectable for tests.
@@ -22,16 +25,35 @@ public struct LLMFormatter: Formatting {
         client: LLMClient,
         assembler: PromptAssembler = PromptAssembler(),
         validator: OutputValidator = OutputValidator(),
-        style: WritingStyle = .auto,
-        dictionary: [DictionaryEntry] = [],
+        styleProvider: @escaping @Sendable () -> WritingStyle,
+        dictionaryProvider: @escaping @Sendable () async -> [DictionaryEntry],
         timeout: Duration = KoeConstants.llmTotalTimeout
     ) {
         self.client = client
         self.assembler = assembler
         self.validator = validator
-        self.style = style
-        self.dictionary = dictionary
+        self.style = styleProvider
+        self.dictionary = dictionaryProvider
         self.timeout = timeout
+    }
+
+    /// Fixed style/dictionary convenience (tests, simple composition).
+    public init(
+        client: LLMClient,
+        assembler: PromptAssembler = PromptAssembler(),
+        validator: OutputValidator = OutputValidator(),
+        style: WritingStyle = .auto,
+        dictionary: [DictionaryEntry] = [],
+        timeout: Duration = KoeConstants.llmTotalTimeout
+    ) {
+        self.init(
+            client: client,
+            assembler: assembler,
+            validator: validator,
+            styleProvider: { style },
+            dictionaryProvider: { dictionary },
+            timeout: timeout
+        )
     }
 
     public func format(_ transcript: String, _ context: UtteranceContext) async throws -> PipelineOutput {
@@ -40,8 +62,8 @@ public struct LLMFormatter: Formatting {
         // could name the wrong app after a mid-pipeline app switch.
         let prompt = assembler.assemble(
             transcript: transcript,
-            style: style,
-            dictionary: dictionary,
+            style: style(),
+            dictionary: await dictionary(),
             frontmostApp: context.recordingBundleID
         )
         do {
