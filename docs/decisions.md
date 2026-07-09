@@ -17,6 +17,17 @@ Owner directive: work through the remaining STATUS.md tasks autonomously (/loop)
 - **Declined: replacing the finals-tail race with `Deadline.run`.** The tail deadline starts mid-race (at `.fed`), not at operation start — `Deadline`'s shape. Restructuring event consumption into two sequential phases to fit it would cost more than the duplication; a comment in `STTTranscriber` records this.
 - 174 tests green (10 new vs. main). `/verify` deferred to PR-B: these seams have no app-reachable runtime surface until the composition root wires them (nothing in the running app changes on this branch).
 
+## 2026-07-09 (session 13 — M10-T2: metrics)
+
+- **Sample construction is the coordinator's, identifiers are the app's**: `DictationSample` (KoeCore) carries only pipeline facts — durations in ms, outcome kind, degraded flag, target bundle id; the App-side `AppMetricsRecorder` stamps `promptVersion`/`provider` and enforces `telemetryOptOut` per sample. Recording is fire-and-forget so a slow sink can never delay the FIFO release. The metrics schema's body-text absence is a unit test (`noTextColumns`), not just a review item — the Phase 1 exit gate audits this.
+- **LLM TTFT is recorded as a combined STT-final→LLM-done segment** — splitting it needs token streaming (deferred with it); the stats table says so implicitly by not showing a TTFT row. **The ⌘Z rework proxy is deferred**: it requires widening the Fn tap's event mask from `flagsChanged` to key events, which touches the most reliability-critical adapter for a tertiary metric; 👎 rate + 30s same-app re-dictation ship now.
+
+### M10-T2 high-effort code-review follow-up (10 findings; 8 fixed, 1 declined, 1 folded)
+
+- **Metrics open decoupled from the pipeline hard-block**: metrics.sqlite failing to open (disk full, corruption) killed ALL dictation because it shared the history/dictionary all-or-nothing Result — only the invariant-1 write-ahead store justifies a hard block. Metrics now opens in parallel, failure logs + disables recording only.
+- **Retry samples flagged (`isRetry`) and excluded from the stats percentiles** — their "recording" timestamps are stamped at retry-click, and folding them into the P50/P95 pool silently skewed the budget view. **Provider stamped truthfully** ("speechmatics" when no Gemini key — every output degrades). **Date-gap→ms unified into one floored-at-0 helper** (backward clock jumps can't persist negative durations). `redictationRate` is now pure over the view's single fetch; `feedbackStats` counts in SQL instead of fetching text bodies.
+- **Declined**: gating sample construction on opt-out inside the coordinator — the per-sample check in `AppMetricsRecorder` keeps the Settings toggle live; two actor reads + a task spawn per utterance is the accepted cost (noted in code).
+
 ## 2026-07-09 (session 13 — M7-T2: history UI)
 
 - Thin consumer by design: search hybrid (FTS trigram / LIKE), staged writes, and FTS-consistent deletion are `HistoryStore`'s tested responsibilities; the view only renders and calls. The one store addition is `updateFeedback` (👎 toggle, `feedback = -1`/nil — the §1.4 rework-rate proxy that M10-T2 will read).
