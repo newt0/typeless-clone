@@ -34,34 +34,49 @@ struct GoldenHarness {
             exit(2)
         }
         if let category = flag("--category") {
-            cases = cases.filter { $0.category.rawValue == category }
+            // A typo'd category must not silently filter to zero and report a
+            // false all-pass (review finding).
+            guard let parsed = GoldenCase.Category(rawValue: category) else {
+                let valid = GoldenCase.Category.allCases.map(\.rawValue).joined(separator: ", ")
+                FileHandle.standardError.write(Data("unknown category '\(category)' (valid: \(valid))\n".utf8))
+                exit(2)
+            }
+            cases = cases.filter { $0.category == parsed }
         }
-        if let limit = flag("--limit").flatMap(Int.init) {
+        if let rawLimit = flag("--limit") {
+            guard let limit = Int(rawLimit), limit > 0 else {
+                FileHandle.standardError.write(Data("--limit must be a positive integer\n".utf8))
+                exit(2)
+            }
             cases = Array(cases.prefix(limit))
         }
 
         let client = GeminiClient(apiKey: apiKey)
+        let assembler = PromptAssembler()
         var failures: [GoldenChecks.Failure] = []
         var passed = 0
         let started = Date()
 
-        for (index, goldenCase) in cases.enumerated() {
-            let formatter = LLMFormatter(
-                client: client,
+        for goldenCase in cases {
+            // Deliberately NOT through LLMFormatter: its runtime
+            // OutputValidator applies a flat 30% shrink gate that rejects the
+            // shrink-by-design categories (repetition/ITN/self-correction)
+            // before the set's own category-aware checks ever run (review
+            // finding). The harness owns its checks — GoldenChecks is the
+            // single judge here.
+            let prompt = assembler.assemble(
+                transcript: goldenCase.input,
                 style: goldenCase.writingStyle,
-                dictionary: goldenCase.dictionaryEntries
+                dictionary: goldenCase.dictionaryEntries,
+                frontmostApp: nil
             )
             do {
-                let output = try await formatter.format(
-                    goldenCase.input,
-                    UtteranceContext(index: index)
-                )
-                if output.degraded {
-                    failures.append(.init(caseID: goldenCase.id, reason: "degraded (validator rejected / LLM error)"))
-                    print("✘ \(goldenCase.id): degraded")
-                    continue
+                // Generous per-request bound: this is a batch tool, not the
+                // interactive 6s dictation budget (review finding).
+                let output = try await Deadline.run(.seconds(30), onTimeout: { LLMError.timeout }) {
+                    try await client.complete(system: prompt.system, user: prompt.user)
                 }
-                let caseFailures = GoldenChecks.evaluate(output.text, for: goldenCase)
+                let caseFailures = GoldenChecks.evaluate(output, for: goldenCase)
                 if caseFailures.isEmpty {
                     passed += 1
                     print("✔ \(goldenCase.id)")
@@ -69,7 +84,7 @@ struct GoldenHarness {
                     failures.append(contentsOf: caseFailures)
                     for failure in caseFailures { print("✘ \(failure)") }
                     print("   input : \(goldenCase.input)")
-                    print("   output: \(output.text)")
+                    print("   output: \(output)")
                 }
             } catch {
                 failures.append(.init(caseID: goldenCase.id, reason: "error: \(error)"))

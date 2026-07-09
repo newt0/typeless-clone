@@ -1051,22 +1051,20 @@
   "id": "compound-01",
   "category": "compound",
   "input": "えーと、くろーどこーどの、あ、違う、じぇみないのAPIキーなんですけど、明日、あの、しゅとく、じゃなくて設定しておいてください",
-  "rubric": "フィラー除去+言い直し統合+用語復元の複合。",
+  "rubric": "フィラー除去+言い直し統合（Claude Code への言及は破棄）+用語復元の複合。",
   "mustContain": [
    "Gemini"
   ],
   "mustNotContain": [
    "えーと",
-   "じゃなくて"
+   "じゃなくて",
+   "クロードコード",
+   "Claude Code"
   ],
   "dictionary": [
    {
     "surface": "Gemini",
     "reading": "ジェミナイ"
-   },
-   {
-    "surface": "Claude Code",
-    "reading": "クロードコード"
    }
   ]
  },
@@ -1077,10 +1075,12 @@
   "rubric": "改行コマンド+フィラー+ITN+言い直しの複合。",
   "mustContain": [
    "\n",
-   "80"
+   "80",
+   "木曜"
   ],
   "mustNotContain": [
-   "えーと"
+   "えーと",
+   "水曜"
   ]
  },
  {

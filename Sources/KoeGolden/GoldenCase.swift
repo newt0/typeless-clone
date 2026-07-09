@@ -84,14 +84,17 @@ public enum GoldenChecks {
             if trimmed.hasPrefix(marker) { fail("preamble/formatting leakage: \(marker)") }
         }
 
-        // Summarization suspicion (§5.5): >30% shrink is a critical failure.
+        // Summarization suspicion (§5.5). Production parity (OutputValidator
+        // rejects >30% shrink) for categories that should preserve length;
+        // the shrink-by-design categories (filler/repetition/self-correction,
+        // and the newline command that deletes its own marker) get a looser
+        // 50% floor — they compress legitimately, but halving the text still
+        // signals content loss.
+        let shrinkExempt: Set<GoldenCase.Category> = [.filler, .repetition, .selfCorrection, .newlineCommand]
+        let floorRatio = shrinkExempt.contains(goldenCase.category) ? 0.5 : 0.7
         let inputCount = goldenCase.input.count
-        if inputCount > 0, Double(trimmed.count) < Double(inputCount) * 0.5,
-           goldenCase.category != .filler, goldenCase.category != .repetition,
-           goldenCase.category != .selfCorrection {
-            // Filler/repetition/self-correction legitimately shrink; others
-            // get the stricter gate than OutputValidator's runtime 30%.
-            fail("suspicious shrink: \(inputCount) → \(trimmed.count) chars")
+        if inputCount > 0, Double(trimmed.count) < Double(inputCount) * floorRatio {
+            fail("suspicious shrink: \(inputCount) → \(trimmed.count) chars (floor \(floorRatio))")
         }
 
         for needle in goldenCase.mustContain ?? [] where !trimmed.contains(needle) {
@@ -101,12 +104,9 @@ public enum GoldenChecks {
             fail("contains forbidden substring: \(needle)")
         }
 
-        // Dictionary spelling compliance: every entry whose surface is
-        // expected must appear with the exact registered spelling.
-        for entry in goldenCase.dictionaryEntries
-        where (goldenCase.mustContain ?? []).contains(entry.surface) && !trimmed.contains(entry.surface) {
-            fail("dictionary spelling not applied: \(entry.surface)")
-        }
+        // (Dictionary spelling compliance rides mustContain: cases list the
+        // registered surface there, so a separate gated loop could never fire
+        // — removed as dead logic per review.)
 
         return failures
     }
