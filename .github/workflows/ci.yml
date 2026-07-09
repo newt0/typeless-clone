@@ -50,7 +50,11 @@ jobs:
       - name: No direct logging outside the Log wrapper
         run: |
           hits=$(grep -rnE '\b(os_log|NSLog|print)\s*\(' Sources App \
-                   --include='*.swift' | grep -v '/Log\.swift:' || true)
+                   --include='*.swift' | grep -v '/Log\.swift:' \
+                   | grep -v '^Sources/golden-harness/' || true)
+          # golden-harness is a developer CLI (S3-T2): stdout IS its interface,
+          # and it runs golden-set BODY TEXT on purpose — it never ships in the
+          # app bundle, so invariant 4 does not apply to it.
           if [ -n "$hits" ]; then
             echo "::error::direct logging found (use the Log wrapper):"
             echo "$hits"; exit 1

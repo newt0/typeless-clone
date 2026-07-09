@@ -29,8 +29,8 @@ Targets: **KoeCore** (pure) + **KoeStorage** (GRDB) + **KoeProviders** (API adap
 | S1-T2 insertion matrix run | todo | Depends S1-T1; partially manual (owner assists per checklist) |
 | S2-T1 STT harness + utterance set | blocked(owner: STT API keys, voice recordings) | |
 | S2-T2 STT A/B evaluation | todo | Depends S2-T1 |
-| S3-T1 golden set v1 | todo | No keys needed to author cases — can start anytime |
-| S3-T2 regression harness + LLM A/B | blocked(owner: Gemini/AWS keys) | Harness code can be written before keys |
+| S3-T1 golden set v1 | done(branch) | `feat/s3-golden-set`; `Sources/KoeGolden/Resources/golden-set-v1.json` — **105 ケース**（10 カテゴリ×10 + 複合/長文/過整形防止/injection 耐性 5）。§5.3 の must-NOT-convert（箇条書き化禁止）と慣用漢数字保持を含む。`GoldenCase`/`GoldenSet`/`GoldenChecks`（決定的チェック: 非空/前置き漏れ/要約疑い/必須・禁止部分文字列/辞書表記、単体テスト済み） |
+| S3-T2 regression harness + LLM A/B | harness done(branch) / **run blocked(owner: Gemini paid tier)** | `golden-harness` CLI（`GEMINI_API_KEY=… swift run golden-harness [--category cat] [--limit N]`、exit code で回帰ゲート）。**ライブ検証済みだが現キーは free tier（`free_tier_requests` limit 20）で日次 quota 枯渇** — 初期ケースは実 Gemini で pass を確認、以降は 429→degraded（invariant 2 の挙動どおり）。フル A/B（Flash-Lite vs Haiku）は paid キー到着後。⚠️ **free tier キーは dogfooding も 20 リクエスト/日で止まる — paid tier 移行はディクテーション常用の前提** |
 | S4-T1 E2E latency prototype | todo | Depends S1/S2/S3 outcomes |
 
 ## Phase 1 — M0–M3 (`02-phase1-m1-core.md`)

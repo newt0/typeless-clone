@@ -32,5 +32,19 @@ let package = Package(
         // STT/LLM provider adapters (URLSession); no third-party deps.
         .target(name: "KoeProviders", dependencies: ["KoeCore"]),
         .testTarget(name: "KoeProvidersTests", dependencies: ["KoeProviders"]),
+        // S3 golden set: case model + deterministic checks + the bundled v1
+        // set (durable asset; the Phase 1 prompt-regression gate).
+        .target(
+            name: "KoeGolden",
+            dependencies: ["KoeCore"],
+            resources: [.copy("Resources/golden-set-v1.json")]
+        ),
+        .testTarget(name: "KoeGoldenTests", dependencies: ["KoeGolden"]),
+        // S3-T2 harness CLI: runs the set against a configured LLMClient
+        // (keys required at run time, not build time).
+        .executableTarget(
+            name: "golden-harness",
+            dependencies: ["KoeGolden", "KoeCore", "KoeProviders"]
+        ),
     ]
 )
