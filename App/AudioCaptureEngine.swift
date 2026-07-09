@@ -65,8 +65,14 @@ final class AudioCaptureEngine {
     private var isRecording = false
 
     /// Fired on the main actor when the 20-minute session cap stops recording;
-    /// the caller shows the HUD notice.
+    /// the caller shows the HUD cap notice.
     private let onCapReached: () -> Void
+    /// Fired on the main actor when a device-switch rebind fails mid-recording
+    /// and capture is torn down (the stream ends throwing ``CaptureFault``).
+    /// Split from `onCapReached` (batch-C M9 note) so the HUD can't show a
+    /// "20-min limit" message for a route-change failure; the caller only
+    /// resets transient UI (the failure itself surfaces via the pipeline).
+    private let onCaptureFault: () -> Void
     /// Fired on the main actor after a mid-session device switch actually took
     /// effect, with the device now in use; the caller flashes the HUD switch
     /// notice (M9).
@@ -76,11 +82,13 @@ final class AudioCaptureEngine {
         format: AudioFormatSpec = .stt,
         preferBuiltIn: @escaping () -> Bool = { true },
         onCapReached: @escaping () -> Void = {},
+        onCaptureFault: @escaping () -> Void = {},
         onDeviceSwitched: @escaping (AudioInputDevice) -> Void = { _ in }
     ) {
         self.format = format
         self.preferBuiltIn = preferBuiltIn
         self.onCapReached = onCapReached
+        self.onCaptureFault = onCaptureFault
         self.onDeviceSwitched = onDeviceSwitched
         // No engine.prepare() here: the graph is empty until start() installs
         // the input tap, and preparing an empty graph raises an ObjC exception
@@ -239,7 +247,7 @@ final class AudioCaptureEngine {
         else {
             Log.error("audio_device_switch_converter_failed", category: .audio)
             teardown(fault: CaptureFault())
-            onCapReached() // reuse the "recording ended unexpectedly" icon reset
+            onCaptureFault()
             return
         }
 
@@ -258,7 +266,7 @@ final class AudioCaptureEngine {
         } catch {
             Log.error("audio_device_switch_restart_failed", category: .audio)
             teardown(fault: CaptureFault())
-            onCapReached()
+            onCaptureFault()
             return
         }
 

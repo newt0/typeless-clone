@@ -67,7 +67,7 @@ Targets: **KoeCore** (pure) + **KoeStorage** (GRDB) + **KoeProviders** (API adap
 | M7-T1 history schema + write-ahead | done(branch) | `feat/m7-t1-history-store`, +8 tests; GRDB in new KoeStorage target; write-ahead + FTS5 trigram + LIKE fallback for short JP queries + retention |
 | M7-T2 history UI | todo | |
 | M8-T1 dictionary store + dual feed | done(branch) | `feat/m8-t1-dictionary-store`, +9 tests; GRDB CRUD + dual serializers (LLM prompt entries / STT vocab). Editor UI is M10/settings |
-| M9-T1 HUD panel | todo | |
+| M9-T1 HUD panel | done(branch) | `feat/m9-t1-hud-panel`, +10 tests (184 total); pure `HUDModel`/`HUDReducer` (phase + transient notice 2 層、dwell ポリシー込み) in KoeCore/HUD + `DictationUIObserving` seam on `SessionCoordinator` (utteranceBegan/Landed/Failed + per-utterance `DictationSession.states` stream) + `STTTranscriber.onPartial` side channel (HUD live line 専用、永続化・ログなし)。`App/HUDPanelController` (non-activating borderless NSPanel、`.statusBar` level、all-Spaces+fullScreenAuxiliary、`ignoresMouseEvents`、bottom-center) + `App/HUDView` (SwiftUI)。`AudioCaptureEngine` の `onCapReached` を `onCaptureFault` と分割（batch-C M9 ノート解消 — route-change 失敗が「20分上限」表示になる誤りを防止）。retry ボタンは M4-T3。Needs owner QA（フォーカス非奪取・IME 非干渉・フルスクリーン上の表示） |
 | M10-T1 settings | todo | |
 | M10-T2 metrics pipeline | todo | |
 | M11-T1 onboarding flow | todo | |

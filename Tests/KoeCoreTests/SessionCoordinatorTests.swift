@@ -64,6 +64,44 @@ private actor SequencedFocus: ContextProviding {
     }
 }
 
+/// Records the UI-observer callbacks; collects each announced state stream.
+private final class SpyUIObserver: DictationUIObserving, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _began: [Int] = []
+    private var _landed: [InsertResult] = []
+    private var _failed: [Int] = []
+    private var stateTasks: [Int: Task<[DictationState], Never>] = [:]
+
+    var began: [Int] { lock.withLock { _began } }
+    var landed: [InsertResult] { lock.withLock { _landed } }
+    var failed: [Int] { lock.withLock { _failed } }
+
+    func utteranceBegan(_ context: UtteranceContext, states: AsyncStream<DictationState>) {
+        let task = Task {
+            var seen: [DictationState] = []
+            for await state in states { seen.append(state) }
+            return seen
+        }
+        lock.withLock {
+            _began.append(context.index)
+            stateTasks[context.index] = task
+        }
+    }
+
+    func utteranceLanded(_ context: UtteranceContext, result: InsertResult) {
+        lock.withLock { _landed.append(result) }
+    }
+
+    func utteranceFailed(_ context: UtteranceContext) {
+        lock.withLock { _failed.append(context.index) }
+    }
+
+    func collectedStates(forUtterance index: Int) async -> [DictationState] {
+        let task = lock.withLock { stateTasks[index] }
+        return await task?.value ?? []
+    }
+}
+
 /// Captures the exact contexts insertion sees.
 private actor ContextSpyInserter: TextInserting {
     private(set) var contexts: [UtteranceContext] = []
@@ -207,6 +245,44 @@ struct SessionCoordinatorTests {
         _ = await t1.value
         let byTicket = await inserter.contexts.sorted { $0.index < $1.index }
         #expect(byTicket.map(\.recordingBundleID) == ["com.apple.TextEdit", "com.tinyspeck.slackmacgap"])
+    }
+
+    @Test("the UI observer sees begin → states → landed for a successful utterance")
+    func uiObserverLifecycle() async {
+        let observer = SpyUIObserver()
+        let coord = SessionCoordinator(
+            audio: PassthroughAudio(),
+            stt: EchoTranscriber(),
+            formatter: GatedFormatter(gate: nil, gateFor: nil),
+            inserter: RecordingInserter(log: EventLog()),
+            history: SpyHistory(log: EventLog()),
+            focus: StaticFocus(),
+            ui: observer
+        )
+        _ = await (await coord.startUtterance()).value
+        #expect(observer.began == [0])
+        #expect(observer.landed == [.pasted])
+        #expect(observer.failed.isEmpty)
+        // The announced stream carries the utterance's transitions in order.
+        let states = await observer.collectedStates(forUtterance: 0)
+        #expect(states.starts(with: [.idle, .recording, .transcribing, .formatting, .inserting, .done]))
+    }
+
+    @Test("the UI observer sees a failure, not a landing, for a failed utterance")
+    func uiObserverFailure() async {
+        let observer = SpyUIObserver()
+        let coord = SessionCoordinator(
+            audio: PassthroughAudio(),
+            stt: EchoTranscriber(),
+            formatter: GatedFormatter(gate: nil, gateFor: nil),
+            inserter: RecordingInserter(log: EventLog(), failIndices: [0]),
+            history: SpyHistory(log: EventLog()),
+            focus: StaticFocus(),
+            ui: observer
+        )
+        _ = await (await coord.startUtterance()).value
+        #expect(observer.failed == [0])
+        #expect(observer.landed.isEmpty)
     }
 
     @Test("a failed insertion does not block the following utterance")
