@@ -44,14 +44,14 @@ struct PermissionsPanelView: View {
 
             HStack {
                 Spacer()
-                Button("再チェック") { refresh() }
+                Button("再チェック") { Task { await refresh() } }
             }
             Text("権限を付与すると（アクセシビリティは最大 5 秒で）自動的に復帰します。")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(20)
         .frame(width: 480)
-        .task { refresh() }
+        .task { await refresh() }
     }
 
     @ViewBuilder
@@ -70,13 +70,24 @@ struct PermissionsPanelView: View {
         }
     }
 
-    private func refresh() {
+    private func refresh() async {
         micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         axTrusted = AXIsProcessTrusted()
-        sttKeyPresent = hub.secrets.read(.speechmaticsAPIKey) != nil
+        // Off the main actor: a securityd stall / consent dialog on this read
+        // must not freeze the menu and hotkeys (review finding — same
+        // rationale as assemblePipeline's detached reads).
+        let secrets = hub.secrets
+        sttKeyPresent = await Task.detached { secrets.read(.speechmaticsAPIKey) != nil }.value
         if axTrusted {
-            // Opportunistic re-arm (idempotent): clears the ⚠︎ on success.
-            _ = hub.applyFnEnabled?(AppSettings.fnHotkeyEnabled)
+            // Opportunistic re-arm — safe now: start() is a no-op on a
+            // healthy tap, so this cannot cut off a live dictation.
+            let armed = hub.applyFnEnabled?(AppSettings.fnHotkeyEnabled) ?? true
+            if armed, micStatus == .authorized {
+                // Everything actionable is green: release the latched ⚠︎
+                // (mic-caused warnings had no other clearing path — review
+                // finding).
+                hub.setPermissionWarning?(false)
+            }
         }
     }
 

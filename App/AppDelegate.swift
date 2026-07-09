@@ -148,6 +148,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 return
             }
+            // Recording is actually running: a mic-caused ⚠︎ is stale now
+            // (review finding — it otherwise never cleared); AX warnings are
+            // owned by the tap's own revoke/re-arm callbacks.
+            if AXIsProcessTrusted() {
+                self.statusItemController?.setPermissionWarning(false)
+            }
             self.statusItemController?.setRecording(true)
             self.audioSource?.provide(stream)
             self.pressContinuation?.yield(.press)
@@ -185,6 +191,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusItemController.setPermissionWarning(true)
         }
         self.hotkeyTap = tap
+        settingsHub.setPermissionWarning = { [weak statusItemController] on in
+            statusItemController?.setPermissionWarning(on)
+        }
         settingsHub.applyFnEnabled = { [weak self] enabled -> Bool in
             guard let self, let tap = self.hotkeyTap else { return false }
             if enabled {
@@ -274,18 +283,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Open (or bring forward) the M11-T2 permissions/status panel.
     private func openPermissionsPanel() {
-        if permissionsWindow == nil {
-            let hosting = NSHostingController(
-                rootView: PermissionsPanelView().environmentObject(settingsHub)
-            )
-            let window = NSWindow(contentViewController: hosting)
-            window.title = "Koe の状態"
-            window.isReleasedWhenClosed = false
-            window.center()
-            permissionsWindow = window
-        }
+        // Fresh view per open: a cached view's one-shot .task would show
+        // stale statuses on reopen (review finding — same class as the
+        // onboarding window fix).
+        permissionsWindow?.close()
+        let hosting = NSHostingController(
+            rootView: PermissionsPanelView().environmentObject(settingsHub)
+        )
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Koe の状態"
+        window.isReleasedWhenClosed = false
+        window.center()
+        permissionsWindow = window
         NSApp.activate(ignoringOtherApps: true)
-        permissionsWindow?.makeKeyAndOrderFront(nil)
+        window.makeKeyAndOrderFront(nil)
         Log.event("permissions_panel_opened", category: .permission)
     }
 
