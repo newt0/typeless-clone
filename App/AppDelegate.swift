@@ -155,39 +155,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         audioSource: HotkeyAudioSource,
         statusItemController: StatusItemController
     ) async {
-        // Keychain reads happen off the main actor: a pending consent dialog
-        // (first read of a CLI-created item) blocks the calling thread until
-        // the user answers, and that must never freeze the menu/hotkeys.
+        // All blocking work runs off the main actor, concurrently: each
+        // Keychain read can stall on securityd (or a consent dialog on the
+        // first read of a CLI-created item), and the SQLite open + schema/FTS5
+        // migration is disk-bound — none of it may freeze the menu/hotkeys
+        // (review finding: the store open on the main actor reintroduced the
+        // exact "looks hotkey-dead" window the async assembly exists to avoid).
         let secrets = KeychainSecretStore()
-        let (sttKey, geminiKey) = await Task.detached {
-            (secrets.read(.speechmaticsAPIKey), secrets.read(.geminiAPIKey))
-        }.value
-
-        // No STT key → no dictation is possible at all: hard block with ⚠︎.
-        guard let sttKey else {
-            Log.error("config_missing_stt_key", category: .app)
-            statusItemController.setConfigurationWarning(true)
-            return
+        let sttKeyTask = Task.detached { secrets.read(.speechmaticsAPIKey) }
+        let geminiKeyTask = Task.detached { secrets.read(.geminiAPIKey) }
+        let storesTask = Task.detached { () -> Result<(HistoryStore, DictionaryStore), any Error> in
+            do {
+                let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("dev.newt.Koe", isDirectory: true)
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let history = try HistoryStore(path: dir.appendingPathComponent("history.sqlite").path)
+                let dictionary = try DictionaryStore(path: dir.appendingPathComponent("dictionary.sqlite").path)
+                return .success((history, dictionary))
+            } catch {
+                return .failure(error)
+            }
         }
 
         // Stores live in Application Support. Without the history DB the
-        // invariant-1 write-ahead net is gone, so a failed open also hard-blocks
-        // rather than running a pipeline that could lose text silently.
+        // invariant-1 write-ahead net is gone, so a failed open hard-blocks
+        // rather than running a pipeline that could lose text silently. The
+        // stores are kept even when the STT key is missing — History UI (M7)
+        // works without dictation.
         let history: HistoryStore
         let dictionary: DictionaryStore
-        do {
-            let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("dev.newt.Koe", isDirectory: true)
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            history = try HistoryStore(path: dir.appendingPathComponent("history.sqlite").path)
-            dictionary = try DictionaryStore(path: dir.appendingPathComponent("dictionary.sqlite").path)
-        } catch {
+        switch await storesTask.value {
+        case .success(let stores):
+            (history, dictionary) = stores
+        case .failure:
             Log.error("config_store_open_failed", category: .history)
             statusItemController.setConfigurationWarning(true)
             return
         }
         self.historyStore = history
         self.dictionaryStore = dictionary
+
+        // No STT key → no dictation is possible at all: hard block with ⚠︎.
+        guard let sttKey = await sttKeyTask.value else {
+            Log.error("config_missing_stt_key", category: .app)
+            statusItemController.setConfigurationWarning(true)
+            return
+        }
 
         let stt = SpeechmaticsClient(apiKey: sttKey)
         // Hide TLS+WebSocket setup (~300ms) before the first press.
@@ -197,7 +210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // fails instantly and LLMFormatter degrades to the raw transcript
         // (invariant 2) — strictly better than blocking.
         let llmClient: any LLMClient
-        if let geminiKey {
+        if let geminiKey = await geminiKeyTask.value {
             llmClient = GeminiClient(apiKey: geminiKey)
         } else {
             Log.error("config_missing_llm_key", category: .app)

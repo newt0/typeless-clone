@@ -4,46 +4,38 @@ import KoeCore
 /// Bridges the hotkey-driven ``AudioCaptureEngine`` into the coordinator's
 /// ``AudioCapturing`` seam (E2E wiring PR-B).
 ///
-/// The engine's stream is created by `start()` in the hotkey callback (so the
-/// press→recording budget isn't paid inside the pipeline), then handed over
-/// here; the coordinator's `record()` picks it up. Both sides run on the main
-/// actor, so the handoff is a plain FIFO with no reordering window — and
-/// recording is exclusive anyway (`start()` refuses while already recording),
-/// so at most one stream is ever in flight per utterance.
+/// Pairing is keyed, not arrival-ordered: `startUtterance()` returns as soon
+/// as its FIFO ticket is reserved, and the spawned pipeline `Task`s reach
+/// `record()` in whatever order the scheduler runs them — two overlapping
+/// utterances could otherwise swap audio streams (review finding). The key
+/// works because press k's stream is the k-th `provide()` (the hotkey callback
+/// provides before it enqueues the press, and recording is exclusive) and
+/// press k's utterance holds ticket k (the press loop is the coordinator's
+/// only caller and awaits each `startUtterance()`, and the serializer hands
+/// out contiguous tickets from 0). If a second `startUtterance` caller is ever
+/// added, this pairing must be revisited.
 @MainActor
 final class HotkeyAudioSource: AudioCapturing {
-    private var pending: [AudioCaptureEngine.ChunkStream] = []
-    private var waiters: [CheckedContinuation<AudioCaptureEngine.ChunkStream, Never>] = []
+    private var streams: [Int: AudioCaptureEngine.ChunkStream] = [:]
+    private var waiters: [Int: CheckedContinuation<AudioCaptureEngine.ChunkStream, Never>] = [:]
+    private var nextOrdinal = 0
 
-    /// Called from the hotkey `onStart` with the stream `start()` returned.
+    /// Called from the hotkey `onStart` with the stream `start()` returned,
+    /// before the press is enqueued for `startUtterance()`.
     func provide(_ stream: AudioCaptureEngine.ChunkStream) {
-        if waiters.isEmpty {
-            pending.append(stream)
+        let ordinal = nextOrdinal
+        nextOrdinal += 1
+        if let waiter = waiters.removeValue(forKey: ordinal) {
+            waiter.resume(returning: stream)
         } else {
-            waiters.removeFirst().resume(returning: stream)
+            streams[ordinal] = stream
         }
     }
 
     func record(_ context: UtteranceContext) async throws -> AsyncThrowingStream<Data, any Error> {
-        if !pending.isEmpty {
-            return Self.bridge(pending.removeFirst())
+        if let stream = streams.removeValue(forKey: context.index) {
+            return stream
         }
-        let stream = await withCheckedContinuation { waiters.append($0) }
-        return Self.bridge(stream)
-    }
-
-    /// Adapt the engine's non-throwing stream to the seam's throwing shape.
-    /// The engine cannot yet signal a mid-capture fault (it ends the stream
-    /// the same way as a normal stop; splitting that is the M9 `onCapReached`
-    /// callback work), so today this bridge never throws — but the seam
-    /// contract is ready for it.
-    private static func bridge(_ stream: AudioCaptureEngine.ChunkStream) -> AsyncThrowingStream<Data, any Error> {
-        AsyncThrowingStream { continuation in
-            let pump = Task {
-                for await chunk in stream { continuation.yield(chunk) }
-                continuation.finish()
-            }
-            continuation.onTermination = { _ in pump.cancel() }
-        }
+        return await withCheckedContinuation { waiters[context.index] = $0 }
     }
 }

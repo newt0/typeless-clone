@@ -5,14 +5,20 @@ import KoeCore
 /// Owns the microphone `AVAudioEngine` and converts its input to the STT wire
 /// format (Design §7.4; plan M3-T1/M3-T2).
 ///
-/// The engine is built and `prepare()`d once at construction and kept
-/// stopped-but-ready, so a hotkey press only pays ``start()`` (FR-01:
-/// press→recording ≤200ms, ~50ms in practice). ``start()`` selects an input
-/// device (``InputDeviceSelector`` — prefer built-in to dodge Bluetooth HFP),
-/// pins it, installs an input tap, converts each buffer to 16kHz mono PCM16 via
-/// `AVAudioConverter`, appends it to a ``SessionAudioBuffer`` for STT
-/// batch-resend (M4-T3), and yields it as `Data` on an `AsyncStream` sized to
-/// ~40ms chunks. No client-side NR/AGC — raw audio only (invariant 8).
+/// The engine is built once and kept stopped; the graph itself is only
+/// populated (tap install → implicit prepare inside `engine.start()`) per
+/// recording, because preparing the empty graph at construction raises a
+/// swallowed ObjC exception that kills the launch sequence (decisions.md
+/// session 13 — FR-01 press→recording ≤200ms is owner-QA-measured on the
+/// first press). ``start()`` selects an input device (``InputDeviceSelector``
+/// — prefer built-in to dodge Bluetooth HFP), pins it, installs an input tap,
+/// converts each buffer to 16kHz mono PCM16 via `AVAudioConverter`, appends it
+/// to a ``SessionAudioBuffer`` for STT batch-resend (M4-T3), and yields it as
+/// `Data` on a throwing stream sized to ~40ms chunks — a mid-capture fault
+/// ends the stream with an error so the pipeline fails loudly instead of
+/// transcribing truncated audio as success (invariant 1); key-up and the
+/// session cap finish it normally. No client-side NR/AGC — raw audio only
+/// (invariant 8).
 ///
 /// Device-switch survival (M3-T2): while recording, the engine watches the
 /// default-input route (``AudioDeviceObserver``) and the AVAudioEngine
@@ -33,9 +39,14 @@ import KoeCore
 /// engine is stopped, so they never race the tap thread.
 @MainActor
 final class AudioCaptureEngine {
-    /// Converted audio chunks (16kHz mono PCM16 LE), ~40ms each. The M4 STT
-    /// client is the real consumer; until then AppDelegate drains it.
-    typealias ChunkStream = AsyncStream<Data>
+    /// Converted audio chunks (16kHz mono PCM16 LE), ~40ms each, consumed by
+    /// the STT pipeline. Throwing: a capture fault (device-switch rebind
+    /// failure) finishes it with ``CaptureFault``; key-up/cap finish normally.
+    typealias ChunkStream = AsyncThrowingStream<Data, any Error>
+
+    /// A mid-recording capture fault: the session's audio is incomplete, so
+    /// the utterance must fail loudly rather than transcribe as success.
+    struct CaptureFault: Error {}
 
     private let engine = AVAudioEngine()
     private let format: AudioFormatSpec
@@ -227,7 +238,7 @@ final class AudioCaptureEngine {
             let continuation
         else {
             Log.error("audio_device_switch_converter_failed", category: .audio)
-            teardown()
+            teardown(fault: CaptureFault())
             onCapReached() // reuse the "recording ended unexpectedly" icon reset
             return
         }
@@ -246,7 +257,7 @@ final class AudioCaptureEngine {
             try engine.start()
         } catch {
             Log.error("audio_device_switch_restart_failed", category: .audio)
-            teardown()
+            teardown(fault: CaptureFault())
             onCapReached()
             return
         }
@@ -301,13 +312,21 @@ final class AudioCaptureEngine {
         }
     }
 
-    private func teardown() {
+    /// `fault` non-nil = the recording is incomplete (capture broke mid-
+    /// session): the stream ends throwing so the pipeline fails the utterance
+    /// loudly. `nil` = normal end (key-up / cap), indistinguishable from the
+    /// user's own stop by design.
+    private func teardown(fault: (any Error)? = nil) {
         isRecording = false
         currentDevice = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         tapState = nil
-        continuation?.finish()
+        if let fault {
+            continuation?.finish(throwing: fault)
+        } else {
+            continuation?.finish()
+        }
         continuation = nil
         endActivity()
     }
