@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import SwiftUI
 import KoeCore
 import KoeProviders
@@ -25,6 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Live bridge into the Settings scene (M10-T1).
     let settingsHub = SettingsHub()
     private var historyWindow: NSWindow?
+    private var onboardingWindow: NSWindow?
+    private var permissionsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Agent app: no Dock icon, no app switcher (paired with LSUIElement).
@@ -73,7 +76,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
         let statusItemController = StatusItemController(
             qaActions: qaActions,
-            onOpenHistory: { [weak self] in self?.openHistory() }
+            onOpenHistory: { [weak self] in self?.openHistory() },
+            onOpenOnboarding: { [weak self] in self?.openOnboarding() },
+            onOpenPermissions: { [weak self] in self?.openPermissionsPanel() }
         )
         self.statusItemController = statusItemController
         Log.event("app_launched", category: .app)
@@ -127,11 +132,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             guard self.coordinator != nil else {
                 // No pipeline (missing key / store failure / still assembling):
-                // don't record audio nobody can transcribe.
+                // don't record audio nobody can transcribe — and never look
+                // simply dead (M11-T2): explain what's broken.
                 Log.event("hotkey_ignored_no_pipeline", category: .session)
+                self.openPermissionsPanel()
                 return
             }
-            guard let stream = self.audioEngine?.start() else { return }
+            guard let stream = self.audioEngine?.start() else {
+                // Mic revoked is the actionable case; a double-press while
+                // already recording is normal and must not pop a panel.
+                if AVCaptureDevice.authorizationStatus(for: .audio) != .authorized {
+                    Log.event("hotkey_blocked_mic", category: .permission)
+                    self.statusItemController?.setPermissionWarning(true)
+                    self.openPermissionsPanel()
+                }
+                return
+            }
+            // Recording is actually running: a mic-caused ⚠︎ is stale now
+            // (review finding — it otherwise never cleared); AX warnings are
+            // owned by the tap's own revoke/re-arm callbacks.
+            if AXIsProcessTrusted() {
+                self.statusItemController?.setPermissionWarning(false)
+            }
             self.statusItemController?.setRecording(true)
             self.audioSource?.provide(stream)
             self.pressContinuation?.yield(.press)
@@ -147,7 +169,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let tap = FnHotkeyTap(
             onStart: onStart,
             onStop: onStop,
-            onRevoked: { statusItemController.setPermissionWarning(true) }
+            onRevoked: { statusItemController.setPermissionWarning(true) },
+            onRearmed: { statusItemController.setPermissionWarning(false) }
         )
         if AppSettings.fnHotkeyEnabled {
             if !tap.start() {
@@ -161,12 +184,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.event("hotkey_ax_untrusted", category: .permission)
             statusItemController.setPermissionWarning(true)
         }
+        // Launch self-check (M11-T2): macOS updates can reset TCC. Mic state
+        // is only otherwise probed at record start — too late for the ⚠︎.
+        if AVCaptureDevice.authorizationStatus(for: .audio) == .denied {
+            Log.event("mic_denied_at_launch", category: .permission)
+            statusItemController.setPermissionWarning(true)
+        }
         self.hotkeyTap = tap
+        settingsHub.setPermissionWarning = { [weak statusItemController] on in
+            statusItemController?.setPermissionWarning(on)
+        }
         settingsHub.applyFnEnabled = { [weak self] enabled -> Bool in
             guard let self, let tap = self.hotkeyTap else { return false }
             if enabled {
                 let started = tap.start()
-                if !started { self.statusItemController?.setPermissionWarning(true) }
+                // A successful (re-)arm proves Accessibility: clear the
+                // latched ⚠︎ from the failed launch attempt (review finding —
+                // first-run users otherwise finish onboarding with a working
+                // hotkey and a permanent warning icon).
+                self.statusItemController?.setPermissionWarning(!started)
                 return started
             } else {
                 tap.disable()
@@ -179,6 +215,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alt = AltHotkeyMonitor(onStart: onStart, onStop: onStop)
         alt.start()
         self.altHotkey = alt
+
+        // First run: walk the user to a working dictation (M11-T1). Shown
+        // after the hotkeys are wired so the test-dictation step works the
+        // moment the pipeline is ready.
+        if !AppSettings.onboardingCompleted {
+            openOnboarding()
+        }
 
         // The real pipeline (E2E wiring PR-B): press → audio → Speechmatics →
         // Gemini formatting → paste, with write-ahead history. Assembled AFTER
@@ -218,6 +261,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.event("history_window_opened", category: .history)
     }
 
+    /// Open (or bring forward) the onboarding window (M11-T1); also the menu's
+    /// "セットアップをやり直す" entry.
+    private func openOnboarding() {
+        // Always a fresh view: reusing the cached window kept the old @State
+        // (step, permission flags), so「セットアップをやり直す」reopened on the
+        // finished screen instead of restarting (review finding).
+        onboardingWindow?.close()
+        let hosting = NSHostingController(
+            rootView: OnboardingView().environmentObject(settingsHub)
+        )
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Koe セットアップ"
+        window.isReleasedWhenClosed = false
+        window.center()
+        onboardingWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        Log.event("onboarding_opened", category: .app)
+    }
+
+    /// Open (or bring forward) the M11-T2 permissions/status panel.
+    private func openPermissionsPanel() {
+        // Fresh view per open: a cached view's one-shot .task would show
+        // stale statuses on reopen (review finding — same class as the
+        // onboarding window fix).
+        permissionsWindow?.close()
+        let hosting = NSHostingController(
+            rootView: PermissionsPanelView().environmentObject(settingsHub)
+        )
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Koe の状態"
+        window.isReleasedWhenClosed = false
+        window.center()
+        permissionsWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        Log.event("permissions_panel_opened", category: .permission)
+    }
+
     /// Composition root: construct the provider clients, stores, and the
     /// coordinator. `coordinator` stays nil on any hard failure — the hotkeys
     /// check it per press.
@@ -236,17 +318,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let secrets = KeychainSecretStore()
         let sttKeyTask = Task.detached { secrets.read(.speechmaticsAPIKey) }
         let geminiKeyTask = Task.detached { secrets.read(.geminiAPIKey) }
+        let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("dev.newt.Koe", isDirectory: true)
         let storesTask = Task.detached { () -> Result<(HistoryStore, DictionaryStore), any Error> in
             do {
-                let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                    .appendingPathComponent("dev.newt.Koe", isDirectory: true)
-                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                let history = try HistoryStore(path: dir.appendingPathComponent("history.sqlite").path)
-                let dictionary = try DictionaryStore(path: dir.appendingPathComponent("dictionary.sqlite").path)
+                try FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+                let history = try HistoryStore(path: supportDir.appendingPathComponent("history.sqlite").path)
+                let dictionary = try DictionaryStore(path: supportDir.appendingPathComponent("dictionary.sqlite").path)
                 return .success((history, dictionary))
             } catch {
                 return .failure(error)
             }
+        }
+        // Metrics is optional/opt-outable: its open runs in parallel and its
+        // failure must never block dictation (review finding — only the
+        // history write-ahead justifies a hard block).
+        let metricsTask = Task.detached { () -> MetricsStore? in
+            try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+            return try? MetricsStore(path: supportDir.appendingPathComponent("metrics.sqlite").path)
         }
 
         // Stores live in Application Support. Without the history DB the
@@ -268,6 +357,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.dictionaryStore = dictionary
         settingsHub.historyStore = history
         settingsHub.dictionaryStore = dictionary
+        let metricsStore = await metricsTask.value
+        if metricsStore == nil { Log.error("config_metrics_open_failed", category: .history) }
+        settingsHub.metricsStore = metricsStore
         // M10 retention setting, applied at launch (M7-T2 spec).
         let retentionDays = AppSettings.historyRetentionDays
         if retentionDays > 0 {
@@ -289,11 +381,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // fails instantly and LLMFormatter degrades to the raw transcript
         // (invariant 2) — strictly better than blocking.
         let llmClient: any LLMClient
+        let llmProvider: String
         if let geminiKey = await geminiKeyTask.value {
             llmClient = GeminiClient(apiKey: geminiKey)
+            llmProvider = "speechmatics+gemini"
         } else {
             Log.error("config_missing_llm_key", category: .app)
             llmClient = MissingKeyLLMClient()
+            llmProvider = "speechmatics" // no LLM key: every output degrades to raw
         }
 
         // STT vocabulary is fetched fresh per utterance; the LLM prompt
@@ -333,7 +428,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             history: history,
             focus: focus,
             ui: hud,
-            recovery: transcriber
+            recovery: transcriber,
+            metrics: metricsStore.map { AppMetricsRecorder(store: $0, provider: llmProvider) }
         )
         self.coordinator = coordinator
         hud?.onRetry = { [weak self] handle in
@@ -345,6 +441,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsHub.pipelineReady = true
         settingsHub.historyRefreshTick += 1
         Log.event("pipeline_ready", category: .session)
+    }
+}
+
+/// Local metrics sink (M10-T2): honors the Settings opt-out per sample and
+/// stamps the prompt/provider identifiers the pure sample doesn't know.
+private struct AppMetricsRecorder: MetricsRecording {
+    let store: MetricsStore
+    /// Actual provider composition (review finding: a missing Gemini key must
+    /// not be recorded as if Gemini formatted the text).
+    let provider: String
+    func record(_ sample: DictationSample) async {
+        // Checked per sample so the Settings toggle applies live; the
+        // remaining per-utterance cost when opted out (two actor reads + a
+        // task spawn) is accepted for that (decisions.md).
+        guard !AppSettings.telemetryOptOut else { return }
+        await store.record(
+            sample,
+            promptVersion: PromptTemplate.current.version,
+            provider: provider
+        )
     }
 }
 

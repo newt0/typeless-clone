@@ -154,6 +154,20 @@ public actor HistoryStore: HistoryWriting {
         }
     }
 
+    /// 👎-rate inputs over the most recent `limit` rows (M10-T2 stats view).
+    /// SQL aggregation — counting must not fetch full text bodies (review
+    /// finding).
+    public func feedbackStats(limit: Int = 100) async throws -> (total: Int, down: Int) {
+        try await dbQueue.read { db in
+            let row = try Row.fetchOne(db, sql: """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN feedback = -1 THEN 1 ELSE 0 END) AS down
+                FROM (SELECT feedback FROM dictations ORDER BY createdAt DESC LIMIT ?)
+                """, arguments: [limit])
+            return (row?["total"] as Int? ?? 0, row?["down"] as Int? ?? 0)
+        }
+    }
+
     // MARK: Queries (used by the history UI, M7-T2)
 
     /// Most recent dictations, newest first.

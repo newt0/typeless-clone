@@ -26,13 +26,23 @@ final class StatusItemController {
     private let qaActions: [(title: String, run: () -> Void)]
     /// Opens the History window (M7-T2).
     private let onOpenHistory: () -> Void
+    /// Re-runs onboarding (M11-T1).
+    private let onOpenOnboarding: () -> Void
+    /// Opens the permissions/status panel (M11-T2).
+    private let onOpenPermissions: () -> Void
+    /// The menu's warning entry — visible only while a warning is latched.
+    private var permissionMenuItem: NSMenuItem?
 
     init(
         qaActions: [(title: String, run: () -> Void)] = [],
-        onOpenHistory: @escaping () -> Void = {}
+        onOpenHistory: @escaping () -> Void = {},
+        onOpenOnboarding: @escaping () -> Void = {},
+        onOpenPermissions: @escaping () -> Void = {}
     ) {
         self.qaActions = qaActions
         self.onOpenHistory = onOpenHistory
+        self.onOpenOnboarding = onOpenOnboarding
+        self.onOpenPermissions = onOpenPermissions
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         applyIcon()
         statusItem.menu = buildMenu()
@@ -53,7 +63,12 @@ final class StatusItemController {
         applyIcon()
     }
 
+    private func updateWarningItem() {
+        permissionMenuItem?.isHidden = !(permissionWarning || configurationWarning)
+    }
+
     private func applyIcon() {
+        updateWarningItem()
         guard let button = statusItem.button else { return }
         // Recording is the transient overlay; the latched ⚠︎ shows through again
         // as soon as recording stops (permission > configuration > normal).
@@ -70,11 +85,26 @@ final class StatusItemController {
 
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
+        // M11-T2: when a warning is latched, the first thing the user sees on
+        // clicking the icon explains it — the hotkey must never appear
+        // silently dead (Design §11.3).
+        let warning = menu.addItem(
+            withTitle: "⚠️ 権限に問題があります — 確認…",
+            action: #selector(openPermissions),
+            keyEquivalent: ""
+        )
+        warning.target = self
+        warning.isHidden = true
+        permissionMenuItem = warning
+
         let history = menu.addItem(withTitle: "History…", action: #selector(openHistory), keyEquivalent: "y")
         history.target = self
 
         let settings = menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
+
+        let onboarding = menu.addItem(withTitle: "セットアップをやり直す", action: #selector(openOnboarding), keyEquivalent: "")
+        onboarding.target = self
 
         menu.addItem(.separator())
         menu.addItem(withTitle: "Pause", action: nil, keyEquivalent: "") // placeholder
@@ -110,6 +140,14 @@ final class StatusItemController {
 
     @objc private func openHistory() {
         onOpenHistory()
+    }
+
+    @objc private func openOnboarding() {
+        onOpenOnboarding()
+    }
+
+    @objc private func openPermissions() {
+        onOpenPermissions()
     }
 
     @objc private func openSettings() {

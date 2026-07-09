@@ -38,6 +38,8 @@ public actor SessionCoordinator {
     private let ui: (any DictationUIObserving)?
     /// Batch retry seam (M4-T3); `nil` = retry unavailable.
     private let recovery: (any RecoveryRetrying)?
+    /// Local metrics sink (M10-T2); `nil` = not recording.
+    private let metricsSink: (any MetricsRecording)?
     /// Retries currently in flight, keyed by audio id — a double-tapped HUD
     /// button must not insert the same utterance twice (review finding).
     private var activeRetries: Set<String> = []
@@ -51,6 +53,7 @@ public actor SessionCoordinator {
         focus: ContextProviding,
         ui: (any DictationUIObserving)? = nil,
         recovery: (any RecoveryRetrying)? = nil,
+        metrics: (any MetricsRecording)? = nil,
         serializer: InsertionSerializer = InsertionSerializer(),
         now: @escaping @Sendable () -> Date = { Date() },
         logger: DictationEventLogger = NoopDictationEventLogger()
@@ -63,6 +66,7 @@ public actor SessionCoordinator {
         self.focus = focus
         self.ui = ui
         self.recovery = recovery
+        self.metricsSink = metrics
         self.serializer = serializer
         self.now = now
         self.logger = logger
@@ -112,7 +116,7 @@ public actor SessionCoordinator {
             recordingBundleID: await bundleID
         )
         return Task {
-            let outcome = await self.run(context) { session in
+            let outcome = await self.run(context, isRetry: true) { session in
                 guard let recovery = self.recovery else { throw UnrecoveredUtterance(audioID: nil) }
                 // Synthetic transitions: there is no live mic for a retry, but
                 // the lifecycle (and its observers) stay uniform.
@@ -174,6 +178,7 @@ public actor SessionCoordinator {
     /// the failure (`nil` = not retryable).
     private func run(
         _ context: UtteranceContext,
+        isRetry: Bool = false,
         transcribe: (DictationSession) async throws -> String,
         failureRecovery: (any Error) async -> RecoveryHandle?
     ) async -> DictationOutcome {
@@ -209,6 +214,24 @@ public actor SessionCoordinator {
             ui?.utteranceLanded(context, result: result)
         case .failed(let recovery):
             ui?.utteranceFailed(context, recovery: recovery)
+        }
+        if let metricsSink {
+            // Numeric outcome only (invariant 4); fire-and-forget so a slow
+            // sink can never delay the FIFO release below.
+            let outcomeLabel: String = switch outcome {
+            case .completed(let result): result.rawValue
+            case .failed: "failed"
+            }
+            let sample = DictationSample(
+                createdAt: now(),
+                utterance: context.index,
+                outcome: outcomeLabel,
+                isRetry: isRetry,
+                degraded: await session.degradedToRaw,
+                appBundleID: context.recordingBundleID,
+                metrics: await session.metrics
+            )
+            Task { await metricsSink.record(sample) }
         }
         // Release the FIFO slot exactly once, in ticket order, on every path —
         // so a cancelled/failed utterance never blocks the ones behind it
