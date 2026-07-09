@@ -37,28 +37,40 @@ final class FnHotkeyTap {
     /// Invoked when the liveness check finds Accessibility was revoked (the tap
     /// is torn down first). The caller surfaces the ⚠︎ warning state.
     private let onRevoked: () -> Void
+    private let onRearmed: () -> Void
+    private var regrantTask: Task<Void, Never>?
 
     init(
         mode: HotkeyMode = .hold,
         onStart: @escaping () -> Void,
         onStop: @escaping () -> Void,
-        onRevoked: @escaping () -> Void = {}
+        onRevoked: @escaping () -> Void = {},
+        onRearmed: @escaping () -> Void = {}
     ) {
         self.engine = HotkeyEngine(mode: mode)
         self.activation = HotkeyActivation(onStart: onStart, onStop: onStop)
         self.onRevoked = onRevoked
+        self.onRearmed = onRearmed
     }
 
     /// Create and enable the tap. Returns `false` (without crashing) when
     /// Accessibility is not yet granted — the caller surfaces the ⚠︎ state.
     func start() -> Bool {
-        // Re-arm (M11 onboarding/settings): rebuild through a clean teardown.
-        // Never returns early with an existing tap — a revoke→re-grant leaves
-        // a stale dead tap that would masquerade as live for up to a liveness
-        // interval (review finding); the teardown also resets the engine via
-        // the activation, and the rebuild keeps the single-tap property
-        // structurally (never two live taps).
-        if tap != nil { disable() }
+        // Any explicit (re-)arm supersedes a pending re-grant watcher — a
+        // stale poller waking later must not tear down what we build here
+        // (review finding: it could truncate a live recording).
+        regrantTask?.cancel()
+        regrantTask = nil
+        if let tap {
+            // Healthy tap → no-op (a redundant re-arm from the permissions
+            // panel or Settings must not rebuild — rebuilding resets the
+            // engine and would cut off a dictation mid-hold). Stale (revoked→
+            // re-granted, or disabled beyond re-enable) → verified rebuild.
+            if AXIsProcessTrusted(), CGEvent.tapIsEnabled(tap: tap) {
+                return true
+            }
+            disable()
+        }
         guard AXIsProcessTrusted() else {
             Log.event("hotkey_ax_untrusted", category: .permission)
             return false
@@ -100,7 +112,8 @@ final class FnHotkeyTap {
     /// stayed recording until the 20-minute cap).
     func disable() {
         activation.apply(engine.reset())
-        stop()
+        stop() // also cancels the re-grant watcher: an explicit OFF must not
+               // be silently undone by a stale poller (review finding)
         Log.event("hotkey_tap_disabled", category: .hotkey)
     }
 
@@ -110,6 +123,8 @@ final class FnHotkeyTap {
     func stop() {
         livenessTask?.cancel()
         livenessTask = nil
+        regrantTask?.cancel()
+        regrantTask = nil
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
@@ -151,6 +166,35 @@ final class FnHotkeyTap {
             activation.apply(engine.reset())
             stop()
             onRevoked()
+            // The hotkey must never stay silently dead (M11-T2): keep watching
+            // for the re-grant and revive without a relaunch.
+            startRegrantWatcher()
+        }
+    }
+
+    /// Poll for the Accessibility re-grant after a revocation; on success the
+    /// tap rebuilds (idempotent ``start()``) and the caller clears its ⚠︎.
+    private func startRegrantWatcher() {
+        regrantTask?.cancel()
+        regrantTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: KoeConstants.axRegrantPollInterval)
+                guard !Task.isCancelled, let self else { return }
+                guard AXIsProcessTrusted() else { continue }
+                // start() cancels regrantTask (this task) as a supersede
+                // guard; that's fine — we return right after either way.
+                if self.start() {
+                    Log.event("hotkey_ax_rearmed", category: .permission)
+                    self.onRearmed()
+                } else {
+                    // Known post-grant quirk: the tap may refuse to create
+                    // until relaunch — leave the ⚠︎ latched; the permissions
+                    // panel offers the restart guidance.
+                    Log.error("hotkey_rearm_failed", category: .permission)
+                }
+                self.regrantTask = nil
+                return
+            }
         }
     }
 

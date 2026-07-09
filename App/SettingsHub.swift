@@ -25,4 +25,7 @@ final class SettingsHub: ObservableObject {
     /// Start/stop the Fn tap live; returns whether the change took effect
     /// (false = Accessibility missing — the toggle reverts).
     var applyFnEnabled: ((Bool) -> Bool)?
+    /// Set/clear the status item's latched permission ⚠︎ (M11-T2 panel's
+    /// all-clear path — mic-caused warnings have no tap-side clearing).
+    var setPermissionWarning: ((Bool) -> Void)?
 }

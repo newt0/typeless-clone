@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import SwiftUI
 import KoeCore
 import KoeProviders
@@ -26,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let settingsHub = SettingsHub()
     private var historyWindow: NSWindow?
     private var onboardingWindow: NSWindow?
+    private var permissionsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Agent app: no Dock icon, no app switcher (paired with LSUIElement).
@@ -75,7 +77,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let statusItemController = StatusItemController(
             qaActions: qaActions,
             onOpenHistory: { [weak self] in self?.openHistory() },
-            onOpenOnboarding: { [weak self] in self?.openOnboarding() }
+            onOpenOnboarding: { [weak self] in self?.openOnboarding() },
+            onOpenPermissions: { [weak self] in self?.openPermissionsPanel() }
         )
         self.statusItemController = statusItemController
         Log.event("app_launched", category: .app)
@@ -129,11 +132,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             guard self.coordinator != nil else {
                 // No pipeline (missing key / store failure / still assembling):
-                // don't record audio nobody can transcribe.
+                // don't record audio nobody can transcribe — and never look
+                // simply dead (M11-T2): explain what's broken.
                 Log.event("hotkey_ignored_no_pipeline", category: .session)
+                self.openPermissionsPanel()
                 return
             }
-            guard let stream = self.audioEngine?.start() else { return }
+            guard let stream = self.audioEngine?.start() else {
+                // Mic revoked is the actionable case; a double-press while
+                // already recording is normal and must not pop a panel.
+                if AVCaptureDevice.authorizationStatus(for: .audio) != .authorized {
+                    Log.event("hotkey_blocked_mic", category: .permission)
+                    self.statusItemController?.setPermissionWarning(true)
+                    self.openPermissionsPanel()
+                }
+                return
+            }
+            // Recording is actually running: a mic-caused ⚠︎ is stale now
+            // (review finding — it otherwise never cleared); AX warnings are
+            // owned by the tap's own revoke/re-arm callbacks.
+            if AXIsProcessTrusted() {
+                self.statusItemController?.setPermissionWarning(false)
+            }
             self.statusItemController?.setRecording(true)
             self.audioSource?.provide(stream)
             self.pressContinuation?.yield(.press)
@@ -149,7 +169,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let tap = FnHotkeyTap(
             onStart: onStart,
             onStop: onStop,
-            onRevoked: { statusItemController.setPermissionWarning(true) }
+            onRevoked: { statusItemController.setPermissionWarning(true) },
+            onRearmed: { statusItemController.setPermissionWarning(false) }
         )
         if AppSettings.fnHotkeyEnabled {
             if !tap.start() {
@@ -163,7 +184,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.event("hotkey_ax_untrusted", category: .permission)
             statusItemController.setPermissionWarning(true)
         }
+        // Launch self-check (M11-T2): macOS updates can reset TCC. Mic state
+        // is only otherwise probed at record start — too late for the ⚠︎.
+        if AVCaptureDevice.authorizationStatus(for: .audio) == .denied {
+            Log.event("mic_denied_at_launch", category: .permission)
+            statusItemController.setPermissionWarning(true)
+        }
         self.hotkeyTap = tap
+        settingsHub.setPermissionWarning = { [weak statusItemController] on in
+            statusItemController?.setPermissionWarning(on)
+        }
         settingsHub.applyFnEnabled = { [weak self] enabled -> Bool in
             guard let self, let tap = self.hotkeyTap else { return false }
             if enabled {
@@ -249,6 +279,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         Log.event("onboarding_opened", category: .app)
+    }
+
+    /// Open (or bring forward) the M11-T2 permissions/status panel.
+    private func openPermissionsPanel() {
+        // Fresh view per open: a cached view's one-shot .task would show
+        // stale statuses on reopen (review finding — same class as the
+        // onboarding window fix).
+        permissionsWindow?.close()
+        let hosting = NSHostingController(
+            rootView: PermissionsPanelView().environmentObject(settingsHub)
+        )
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Koe の状態"
+        window.isReleasedWhenClosed = false
+        window.center()
+        permissionsWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        Log.event("permissions_panel_opened", category: .permission)
     }
 
     /// Composition root: construct the provider clients, stores, and the
