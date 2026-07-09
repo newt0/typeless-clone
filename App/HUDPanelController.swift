@@ -8,22 +8,16 @@ import KoeCore
 /// `.nonactivatingPanel` + `ignoresMouseEvents` (no interactive elements yet —
 /// the M4-T3 retry button will lift that per-state). `.statusBar` level +
 /// all-Spaces/full-screen-auxiliary keep it visible over full-screen apps.
-/// All decisions live in ``HUDReducer`` (KoeCore, tested); this class is the
-/// untestable AppKit adapter: it hops events to the main actor, runs the two
-/// dwell timers, and positions the panel bottom-center of the main screen.
+/// All decisions — including which utterance's events own the panel — live in
+/// ``HUDReducer`` (KoeCore, tested); this class is the untestable AppKit
+/// adapter: it hops events to the main actor, runs the two dwell timers, and
+/// positions the panel bottom-center of the main screen.
 @MainActor
 final class HUDPanelController {
     private let panel: NSPanel
     private let store = HUDModelStore()
     private var phaseTimer: Task<Void, Never>?
     private var noticeTimer: Task<Void, Never>?
-    /// The utterance whose lifecycle currently owns the panel — the most
-    /// recently began one. Overlap policy (P0): state/partial events from
-    /// older utterances are dropped; action-relevant outcomes
-    /// (clipboardFallback / secureBlocked / failed) apply from any utterance
-    /// because the user must see them even if a newer recording is up.
-    private var currentUtterance = -1
-    private var stateTasks: [Int: Task<Void, Never>] = [:]
 
     init() {
         let panel = NSPanel(
@@ -54,10 +48,7 @@ final class HUDPanelController {
 
     /// Live partial line from the transcriber (display-only, never persisted).
     nonisolated func partial(_ text: String, _ context: UtteranceContext) {
-        Task { @MainActor in
-            guard context.index == self.currentUtterance else { return }
-            self.apply(.partial(text))
-        }
+        Task { @MainActor in self.apply(.partial(utterance: context.index, text)) }
     }
 
     // MARK: Reduction + rendering
@@ -65,6 +56,7 @@ final class HUDPanelController {
     private func apply(_ event: HUDEvent) {
         let previous = store.model
         let model = HUDReducer.reduce(previous, event)
+        guard model != previous else { return }
         store.model = model
 
         if model.phase != previous.phase {
@@ -78,7 +70,7 @@ final class HUDPanelController {
                 }
             }
         }
-        if case .notice(let notice) = event {
+        if model.notice != previous.notice, let notice = model.notice {
             noticeTimer?.cancel()
             noticeTimer = Task { [weak self] in
                 try? await Task.sleep(for: HUDReducer.noticeDwell(notice))
@@ -86,25 +78,33 @@ final class HUDPanelController {
                 self?.apply(.noticeDismissFired)
             }
         }
+        updatePresence(model)
+    }
 
-        if model.phase == .hidden && model.notice == nil {
-            panel.orderOut(nil)
-        } else {
-            show()
+    /// Show/hide/re-layout only as needed — partials stream many times per
+    /// second, and each must not re-issue window-server work when the panel
+    /// is already up at the right size (review finding).
+    private func updatePresence(_ model: HUDModel) {
+        let visible = model.phase != .hidden || model.notice != nil
+        guard visible else {
+            if panel.isVisible { panel.orderOut(nil) }
+            return
+        }
+        let size = panel.contentView?.fittingSize ?? NSSize(width: 320, height: 44)
+        if panel.frame.size != size {
+            panel.setContentSize(size)
+            layoutBottomCenter(size: size)
+        }
+        if !panel.isVisible {
+            layoutBottomCenter(size: size)
+            // Never activates the app or takes key status — the target app
+            // keeps focus and IME composition (acceptance criterion).
+            panel.orderFrontRegardless()
         }
     }
 
-    private func show() {
-        layoutBottomCenter()
-        // Never activates the app or takes key status — the target app keeps
-        // focus and IME composition (acceptance criterion).
-        panel.orderFrontRegardless()
-    }
-
-    private func layoutBottomCenter() {
+    private func layoutBottomCenter(size: NSSize) {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
-        let size = panel.contentView?.fittingSize ?? NSSize(width: 320, height: 44)
-        panel.setContentSize(size)
         let visible = screen.visibleFrame
         panel.setFrameOrigin(NSPoint(
             x: visible.midX - size.width / 2,
@@ -118,38 +118,23 @@ final class HUDPanelController {
 extension HUDPanelController: DictationUIObserving {
     nonisolated func utteranceBegan(_ context: UtteranceContext, states: AsyncStream<DictationState>) {
         Task { @MainActor in
-            self.currentUtterance = context.index
-            self.stateTasks[context.index] = Task { [weak self] in
+            self.apply(.began(utterance: context.index))
+            // Consume the utterance's lifecycle for as long as it lives; the
+            // stream finishes with the session, so nothing needs cancelling.
+            Task { [weak self] in
                 for await state in states {
                     guard let self else { return }
-                    await MainActor.run {
-                        guard context.index == self.currentUtterance else { return }
-                        self.apply(.state(state))
-                    }
-                }
-                Task { @MainActor [weak self] in
-                    self?.stateTasks[context.index] = nil
+                    await MainActor.run { self.apply(.state(utterance: context.index, state)) }
                 }
             }
         }
     }
 
     nonisolated func utteranceLanded(_ context: UtteranceContext, result: InsertResult) {
-        Task { @MainActor in
-            // Quiet "done" flashes belong to the current utterance only, but
-            // the user must always see action-relevant outcomes (see the
-            // overlap policy on `currentUtterance`).
-            let isCurrent = context.index == self.currentUtterance
-            switch result {
-            case .pasted, .pastedViaAppleScript:
-                if isCurrent { self.apply(.landed(result)) }
-            case .clipboardFallback, .blockedSecureInput:
-                self.apply(.landed(result))
-            }
-        }
+        Task { @MainActor in self.apply(.landed(utterance: context.index, result)) }
     }
 
     nonisolated func utteranceFailed(_ context: UtteranceContext) {
-        Task { @MainActor in self.apply(.failed) }
+        Task { @MainActor in self.apply(.failed(utterance: context.index)) }
     }
 }

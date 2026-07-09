@@ -74,6 +74,12 @@ struct HUDView: View {
             return "マイク切替: \(name)"
         case .capReached:
             return "録音上限（20分）に達しました"
+        case .staleClipboardFallback:
+            return "直前の発話: ⌘V で貼り付けてください"
+        case .staleSecureBlocked:
+            return "直前の発話: セキュア入力のため挿入せず"
+        case .staleFailed:
+            return "直前の発話を処理できませんでした"
         }
     }
 }
