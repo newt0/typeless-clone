@@ -1,5 +1,6 @@
 import Foundation
 import KoeCore
+import os
 
 // MARK: - WebSocket transport seam
 
@@ -70,10 +71,24 @@ public final class URLSessionWebSocketChannel: WebSocketChannel, @unchecked Send
 
     /// Await a WebSocket ping; cancellation resumes the continuation (via the
     /// forced task cancel) so it never leaks when `verify` times out.
+    ///
+    /// The completion handler is latched to exactly one resume:
+    /// `URLSessionWebSocketTask.sendPing` can invoke its handler more than
+    /// once when the pong races a concurrent socket failure — and the
+    /// `onCancel` teardown (`task.cancel`) widens exactly that window. The
+    /// unlatched version crashed live (SIGTRAP double-resume in the launch
+    /// prewarm, docs/decisions.md session 13).
     private func ping() async throws {
+        let resumed = OSAllocatedUnfairLock(initialState: false)
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
                 task.sendPing { error in
+                    let isFirst = resumed.withLock { alreadyResumed in
+                        if alreadyResumed { return false }
+                        alreadyResumed = true
+                        return true
+                    }
+                    guard isFirst else { return }
                     if let error { cont.resume(throwing: error) } else { cont.resume() }
                 }
             }
