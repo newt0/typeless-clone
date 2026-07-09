@@ -48,16 +48,13 @@ public final class URLSessionWebSocketChannel: WebSocketChannel, @unchecked Send
 
     private func verify(timeout: Duration) async throws {
         do {
-            let ponged = try await withThrowingTaskGroup(of: Bool.self) { group -> Bool in
-                group.addTask { try await self.ping(); return true }
-                group.addTask { try? await Task.sleep(for: timeout); return false }
-                let first = (try await group.next()) ?? false
-                group.cancelAll()
-                return first
-            }
-            if !ponged {
-                task.cancel(with: .abnormalClosure, reason: nil)
-                throw STTError.connection // ping did not return within the timeout
+            // Bound the ping by the connect timeout via the shared primitive. On
+            // timeout `Deadline` cancels the ping child, whose cancellation
+            // handler tears the socket down (`task.cancel`), and throws
+            // STTError.connection; on caller cancellation it propagates
+            // CancellationError instead of a false timeout.
+            try await Deadline.run(timeout, onTimeout: { STTError.connection }) {
+                try await self.ping()
             }
         } catch {
             // A rejected upgrade (bad/absent key) surfaces here; distinguish auth
