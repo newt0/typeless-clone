@@ -37,7 +37,7 @@ public struct LLMFormatter: Formatting {
         self.timeout = timeout
     }
 
-    public func format(_ transcript: String, _ context: UtteranceContext) async -> PipelineOutput {
+    public func format(_ transcript: String, _ context: UtteranceContext) async throws -> PipelineOutput {
         let prompt = assembler.assemble(
             transcript: transcript,
             style: style,
@@ -45,9 +45,13 @@ public struct LLMFormatter: Formatting {
             frontmostApp: frontmostApp()
         )
         do {
-            let raw = try await Self.completeBounded(
-                client, system: prompt.system, user: prompt.user, timeout: timeout
-            )
+            // Bound the request by the §10.3 total-time leg (the TTFT/retry leg
+            // needs token streaming and lands with it). On timeout the in-flight
+            // request is cancelled and the caller degrades (invariant 2).
+            let client = self.client
+            let raw = try await Deadline.run(timeout, onTimeout: { LLMError.timeout }) {
+                try await client.complete(system: prompt.system, user: prompt.user)
+            }
             switch validator.validate(raw: transcript, formatted: raw) {
             case .accept(let text):
                 return PipelineOutput(text: text, degraded: false)
@@ -55,32 +59,20 @@ public struct LLMFormatter: Formatting {
                 Log.event("format_degraded", category: .llm, code: reason.logCode)
                 return PipelineOutput(text: transcript, degraded: true)
             }
+        } catch is CancellationError {
+            // The utterance was cancelled (not a slow LLM). Abort so the pipeline
+            // does not insert text the user cancelled; the coordinator treats the
+            // throw as a failed utterance and never reaches the insert stage.
+            throw CancellationError()
         } catch {
-            // LLM error → insert the raw transcript rather than losing text.
+            // Real LLM error (incl. timeout) → insert the raw transcript rather
+            // than losing text (invariant 2).
             if case LLMError.timeout = error {
                 Log.error("format_llm_timeout", category: .llm)
             } else {
                 Log.error("format_llm_failed", category: .llm)
             }
             return PipelineOutput(text: transcript, degraded: true)
-        }
-    }
-
-    /// Race the request against the total-time bound (Design §10.3, the
-    /// `llmTotalTimeout` leg — the TTFT/retry leg needs token streaming and
-    /// lands with it). On timeout the in-flight request is cancelled and
-    /// ``LLMError/timeout`` is thrown; the caller degrades (invariant 2).
-    private static func completeBounded(
-        _ client: LLMClient, system: String, user: String, timeout: Duration
-    ) async throws -> String {
-        try await withThrowingTaskGroup(of: String?.self) { group in
-            group.addTask { try await client.complete(system: system, user: user) }
-            group.addTask { try? await Task.sleep(for: timeout); return nil }
-            defer { group.cancelAll() }
-            guard let first = try await group.next(), let text = first else {
-                throw LLMError.timeout
-            }
-            return text
         }
     }
 }
