@@ -14,6 +14,10 @@ public struct LLMFormatter: Formatting {
     private let style: WritingStyle
     private let dictionary: [DictionaryEntry]
     private let frontmostApp: @Sendable () -> String?
+    /// Total-time bound on one LLM request (Design §10.3 ladder); exceeding it
+    /// degrades to the raw transcript instead of waiting out URLSession's own
+    /// (much longer) timeout. Injectable for tests.
+    private let timeout: Duration
 
     public init(
         client: LLMClient,
@@ -21,7 +25,8 @@ public struct LLMFormatter: Formatting {
         validator: OutputValidator = OutputValidator(),
         style: WritingStyle = .auto,
         dictionary: [DictionaryEntry] = [],
-        frontmostApp: @escaping @Sendable () -> String? = { nil }
+        frontmostApp: @escaping @Sendable () -> String? = { nil },
+        timeout: Duration = KoeConstants.llmTotalTimeout
     ) {
         self.client = client
         self.assembler = assembler
@@ -29,6 +34,7 @@ public struct LLMFormatter: Formatting {
         self.style = style
         self.dictionary = dictionary
         self.frontmostApp = frontmostApp
+        self.timeout = timeout
     }
 
     public func format(_ transcript: String, _ context: UtteranceContext) async -> PipelineOutput {
@@ -39,7 +45,9 @@ public struct LLMFormatter: Formatting {
             frontmostApp: frontmostApp()
         )
         do {
-            let raw = try await client.complete(system: prompt.system, user: prompt.user)
+            let raw = try await Self.completeBounded(
+                client, system: prompt.system, user: prompt.user, timeout: timeout
+            )
             switch validator.validate(raw: transcript, formatted: raw) {
             case .accept(let text):
                 return PipelineOutput(text: text, degraded: false)
@@ -49,8 +57,30 @@ public struct LLMFormatter: Formatting {
             }
         } catch {
             // LLM error → insert the raw transcript rather than losing text.
-            Log.error("format_llm_failed", category: .llm)
+            if case LLMError.timeout = error {
+                Log.error("format_llm_timeout", category: .llm)
+            } else {
+                Log.error("format_llm_failed", category: .llm)
+            }
             return PipelineOutput(text: transcript, degraded: true)
+        }
+    }
+
+    /// Race the request against the total-time bound (Design §10.3, the
+    /// `llmTotalTimeout` leg — the TTFT/retry leg needs token streaming and
+    /// lands with it). On timeout the in-flight request is cancelled and
+    /// ``LLMError/timeout`` is thrown; the caller degrades (invariant 2).
+    private static func completeBounded(
+        _ client: LLMClient, system: String, user: String, timeout: Duration
+    ) async throws -> String {
+        try await withThrowingTaskGroup(of: String?.self) { group in
+            group.addTask { try await client.complete(system: system, user: user) }
+            group.addTask { try? await Task.sleep(for: timeout); return nil }
+            defer { group.cancelAll() }
+            guard let first = try await group.next(), let text = first else {
+                throw LLMError.timeout
+            }
+            return text
         }
     }
 }

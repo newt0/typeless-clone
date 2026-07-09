@@ -1,14 +1,19 @@
 import Testing
 @testable import KoeCore
 
-/// Mock LLM: returns a canned string or throws.
+/// Mock LLM: returns a canned string, throws, or hangs until cancelled.
 private struct MockLLM: LLMClient {
-    enum Behavior { case reply(String), fail }
+    enum Behavior { case reply(String), fail, hang }
     let behavior: Behavior
     func complete(system: String, user: String) async throws -> String {
         switch behavior {
         case .reply(let s): return s
         case .fail: throw LLMError.http(status: 500)
+        case .hang:
+            // Sleeps far past any test timeout; cancellation (from the
+            // formatter's deadline race) throws and ends the request.
+            try await Task.sleep(for: .seconds(60))
+            return "unreachable"
         }
     }
 }
@@ -46,5 +51,12 @@ struct LLMFormatterTests {
         let out = await f.format(raw, ctx)
         #expect(out.degraded)
         #expect(out.text == raw)
+    }
+
+    @Test("a hung LLM request times out and degrades to raw (§10.3 total-time leg)")
+    func timeoutDegrades() async {
+        let f = LLMFormatter(client: MockLLM(behavior: .hang), timeout: .milliseconds(50))
+        let out = await f.format("えーと明日送ります", ctx)
+        #expect(out == PipelineOutput(text: "えーと明日送ります", degraded: true))
     }
 }

@@ -6,6 +6,9 @@ public enum LLMError: Error, Equatable, Sendable {
     case http(status: Int)
     case malformedResponse
     case empty
+    /// The request exceeded ``KoeConstants/llmTotalTimeout`` (Design §10.3
+    /// ladder) and was abandoned in favor of the raw transcript (invariant 2).
+    case timeout
 }
 
 /// Abstraction over the formatting LLM (Design §4.2; plan M6-T1). Adapters:
