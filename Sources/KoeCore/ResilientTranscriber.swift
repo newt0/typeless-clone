@@ -63,11 +63,17 @@ public struct ResilientTranscriber: Transcribing {
         let (teed, pump) = Self.tee(audio, into: tape)
 
         do {
-            return try await streaming.transcribe(teed, context, onRecordingEnded: onRecordingEnded)
+            let transcript = try await streaming.transcribe(teed, context, onRecordingEnded: onRecordingEnded)
+            // Early provider finalization can return before key-up; stop the
+            // tape (review finding: it would otherwise keep growing until the
+            // mic stream ends, for a transcript we already have).
+            pump.cancel()
+            return transcript
         } catch is CancellationError {
             pump.cancel()
             throw CancellationError()
         } catch let error as UnrecoveredUtterance {
+            pump.cancel()
             throw error // a nested resilient layer already exhausted the ladder
         } catch {
             // Wait for capture to settle: complete → resend; mic fault → the
@@ -96,9 +102,12 @@ public struct ResilientTranscriber: Transcribing {
         }
     }
 
-    /// Re-run the batch leg from a previously persisted WAV (HUD retry). The
-    /// stored audio is deleted only on success, so retry stays available
-    /// across repeated failures within the session.
+    /// Re-run the batch leg from a previously persisted WAV (HUD retry).
+    /// Deliberately does NOT delete the stored audio on success: the
+    /// transcript still has to survive format+insert, and deleting early
+    /// would strand a stale retry handle if a downstream stage fails (review
+    /// finding). The coordinator calls ``discardRecovered(audioID:)`` once the
+    /// whole retry pipeline completed.
     public func retryTranscribe(audioID: String) async throws -> String {
         guard let wav = await store.load(id: audioID) else {
             Log.error("stt_retry_audio_missing", category: .stt)
@@ -110,7 +119,6 @@ public struct ResilientTranscriber: Transcribing {
             let transcript = try await Deadline.run(batchTimeout, onTimeout: { STTError.timeout }) {
                 try await batch.transcribe(wav: wav, vocab: await vocab())
             }
-            await store.delete(id: audioID)
             Log.event("stt_retry_ok", category: .stt)
             return transcript
         } catch is CancellationError {
@@ -119,6 +127,10 @@ public struct ResilientTranscriber: Transcribing {
             Log.error("stt_retry_failed", category: .stt)
             throw UnrecoveredUtterance(audioID: audioID)
         }
+    }
+
+    public func discardRecovered(audioID: String) async {
+        await store.delete(id: audioID)
     }
 
     // MARK: - Tape plumbing
@@ -148,13 +160,17 @@ public struct ResilientTranscriber: Transcribing {
 extension ResilientTranscriber: RecoveryRetrying {}
 
 /// Accumulates one utterance's PCM and resolves "did capture finish cleanly?"
-/// for the resend decision.
+/// for the resend decision. Backed by ``SessionAudioBuffer`` so the tape
+/// shares the session cap instead of duplicating an uncapped copy (review
+/// finding).
 private actor AudioTape {
-    private(set) var pcm = Data()
+    private var buffer = SessionAudioBuffer(format: .stt)
     private var settled: Bool? // true = complete, false = mic fault
     private var waiters: [CheckedContinuation<Bool, Never>] = []
 
-    func append(_ chunk: Data) { pcm.append(chunk) }
+    var pcm: Data { buffer.data }
+
+    func append(_ chunk: Data) { _ = buffer.append(chunk) }
     func markComplete() { settle(true) }
     func markFaulted() { settle(false) }
 

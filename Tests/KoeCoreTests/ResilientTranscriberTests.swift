@@ -165,7 +165,7 @@ struct ResilientTranscriberTests {
         #expect(await batch.receivedWAVs.isEmpty)
     }
 
-    @Test("retry succeeds from the stored WAV and deletes it")
+    @Test("retry success keeps the WAV until discardRecovered (post-pipeline deletion)")
     func retrySuccess() async throws {
         let store = MemoryAudioStore()
         let id = await store.save(wav: Data("wav-bytes".utf8))!
@@ -175,6 +175,11 @@ struct ResilientTranscriberTests {
         )
         let transcript = try await t.retryTranscribe(audioID: id)
         #expect(transcript == "再試行成功")
+        // Not deleted yet — a downstream format/insert failure must keep the
+        // handle retryable (review finding). The coordinator discards after
+        // the whole pipeline completes:
+        #expect(await store.deleted.isEmpty)
+        await t.discardRecovered(audioID: id)
         #expect(await store.deleted == [id])
     }
 

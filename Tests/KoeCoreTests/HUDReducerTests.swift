@@ -23,8 +23,25 @@ struct HUDReducerTests {
 
     @Test("a late partial cannot resurrect a dismissed panel")
     func latePartialIgnored() {
-        let model = reduced([.began(utterance: 0), .partial(utterance: 0, "遅れて到着")])
+        let model = reduced([
+            .began(utterance: 0),
+            .state(utterance: 0, .recording),
+            .landed(utterance: 0, .pasted),
+            .phaseDismissFired,
+            .partial(utterance: 0, "遅れて到着"),
+        ])
         #expect(model.phase == .hidden)
+    }
+
+    @Test("began clears a stale failed phase — the retry button cannot outlive its own retry")
+    func beganClearsStaleFailed() {
+        let handle = RecoveryHandle(audioID: "a", historyID: UUID())
+        let model = reduced([
+            .began(utterance: 0),
+            .failed(utterance: 0, recovery: handle),
+            .began(utterance: 1), // the retry (or next press) takes over
+        ])
+        #expect(model.phase == .working)
     }
 
     @Test("transcribing/formatting/inserting collapse to the working phase")

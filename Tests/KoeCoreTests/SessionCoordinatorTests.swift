@@ -327,9 +327,13 @@ private struct UnrecoveredTranscriber: Transcribing {
 
 private actor FakeRecovery: RecoveryRetrying {
     private(set) var calls: [String] = []
+    private(set) var discarded: [String] = []
     func retryTranscribe(audioID: String) async throws -> String {
         calls.append(audioID)
         return "再試行の文章"
+    }
+    func discardRecovered(audioID: String) async {
+        discarded.append(audioID)
     }
 }
 
@@ -374,12 +378,20 @@ struct SessionCoordinatorRecoveryTests {
             recovery: recovery
         )
         let handle = RecoveryHandle(audioID: "audio-9", historyID: UUID())
-        let outcome = await (await coord.startRetry(handle)).value
+        guard let task = await coord.startRetry(handle) else {
+            Issue.record("first retry must not be treated as a duplicate")
+            return
+        }
+        let outcome = await task.value
         #expect(outcome == .completed(.pasted))
         let events = await log.events
         #expect(events.contains("insert:再試行の文章!"))
+        // Audit row + WAV are discarded only after full completion.
         #expect(events.contains("history.deleted"))
         #expect(await recovery.calls == ["audio-9"])
+        #expect(await recovery.discarded == ["audio-9"])
+        // The in-flight guard has been released: a fresh retry is accepted.
+        #expect(await coord.startRetry(handle) != nil)
     }
 
     @Test("a failed retry surfaces the SAME handle so retry stays available")
@@ -395,8 +407,11 @@ struct SessionCoordinatorRecoveryTests {
             recovery: nil // retry unavailable → UnrecoveredUtterance(audioID: nil)
         )
         let handle = RecoveryHandle(audioID: "audio-9", historyID: UUID())
-        let outcome = await (await coord.startRetry(handle)).value
+        guard let task = await coord.startRetry(handle) else {
+            Issue.record("first retry must not be treated as a duplicate")
+            return
+        }
         // recovery seam absent → audio gone → not retryable
-        #expect(outcome == .failed(recovery: nil))
+        #expect(await task.value == .failed(recovery: nil))
     }
 }

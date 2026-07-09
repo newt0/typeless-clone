@@ -14,8 +14,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var coordinator: SessionCoordinator?
     private var historyStore: HistoryStore?
     private var dictionaryStore: DictionaryStore?
+    /// Serialized dictation triggers: hotkey presses and HUD retries share one
+    /// queue so ticket order always matches user-action order (batch-B
+    /// contract; review finding — an un-awaited retry Task could race a press).
+    enum DictationTrigger { case press, retry(RecoveryHandle) }
     private var pressLoopTask: Task<Void, Never>?
-    private var pressContinuation: AsyncStream<Void>.Continuation?
+    private var pressContinuation: AsyncStream<DictationTrigger>.Continuation?
     private var hudController: HUDPanelController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -86,12 +90,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // taking the next press, which is what maps press order onto FIFO
         // ticket order (batch-B contract in SessionCoordinator.startUtterance).
         // The hotkey callback itself only yields — never blocks the main actor.
-        let (presses, pressContinuation) = AsyncStream<Void>.makeStream()
+        let (presses, pressContinuation) = AsyncStream<DictationTrigger>.makeStream()
         self.pressContinuation = pressContinuation
         pressLoopTask = Task { [weak self] in
-            for await _ in presses {
+            for await trigger in presses {
                 guard let coordinator = self?.coordinator else { continue }
-                await coordinator.startUtterance()
+                switch trigger {
+                case .press:
+                    await coordinator.startUtterance()
+                case .retry(let handle):
+                    await coordinator.startRetry(handle)
+                }
             }
         }
 
@@ -111,7 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let stream = self.audioEngine?.start() else { return }
             self.statusItemController?.setRecording(true)
             self.audioSource?.provide(stream)
-            self.pressContinuation?.yield(())
+            self.pressContinuation?.yield(.press)
         }
         let onStop: () -> Void = { [weak self] in
             self?.statusItemController?.setRecording(false)
@@ -260,9 +269,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             recovery: transcriber
         )
         self.coordinator = coordinator
-        hud?.onRetry = { handle in
+        hud?.onRetry = { [weak self] handle in
             Log.event("hud_retry_pressed", category: .session)
-            Task { await coordinator.startRetry(handle) }
+            // Same serialized queue as hotkey presses: user-action order maps
+            // to FIFO ticket order for retries too.
+            self?.pressContinuation?.yield(.retry(handle))
         }
         Log.event("pipeline_ready", category: .session)
     }

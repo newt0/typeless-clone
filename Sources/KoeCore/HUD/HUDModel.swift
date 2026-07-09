@@ -95,6 +95,11 @@ public enum HUDReducer {
         switch event {
         case .began(let utterance):
             next.currentUtterance = utterance
+            // The new utterance owns the panel from its first instant: leaving
+            // a stale phase up (e.g. `.failed` with its retry button) keeps a
+            // clickable button alive into the retry it just launched (review
+            // finding — double-tap inserted the utterance twice).
+            next.phase = .working
 
         case .state(let utterance, let state):
             guard utterance == next.currentUtterance else { break }

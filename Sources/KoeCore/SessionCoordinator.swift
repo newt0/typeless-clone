@@ -11,6 +11,10 @@ public enum DictationOutcome: Sendable, Equatable {
 /// composes ``ResilientTranscriber`` behind this.
 public protocol RecoveryRetrying: Sendable {
     func retryTranscribe(audioID: String) async throws -> String
+    /// Discard the persisted audio once the WHOLE retry pipeline completed
+    /// (transcript inserted) — never earlier, or a downstream failure strands
+    /// a stale handle (review finding).
+    func discardRecovered(audioID: String) async
 }
 
 /// Orchestrates one dictation per hotkey press (Design §7.2, §10.4; plan M1-T2).
@@ -34,6 +38,9 @@ public actor SessionCoordinator {
     private let ui: (any DictationUIObserving)?
     /// Batch retry seam (M4-T3); `nil` = retry unavailable.
     private let recovery: (any RecoveryRetrying)?
+    /// Retries currently in flight, keyed by audio id — a double-tapped HUD
+    /// button must not insert the same utterance twice (review finding).
+    private var activeRetries: Set<String> = []
 
     public init(
         audio: AudioCapturing,
@@ -88,27 +95,30 @@ public actor SessionCoordinator {
     }
 
     /// Retry an unrecovered utterance from its persisted audio (M4-T3 HUD
-    /// retry button). Reserves a fresh FIFO ticket; on success the
-    /// untranscribed-session marker row is replaced by the real transcript row
-    /// and the stored audio is deleted (by ``RecoveryRetrying``). On failure
-    /// the same handle is surfaced again, so retry stays available.
+    /// retry button). Reserves a fresh FIFO ticket. The audit row and stored
+    /// WAV are deleted only after the WHOLE pipeline completed (transcript
+    /// inserted) — a downstream failure keeps the same handle retryable with
+    /// its audio intact (review finding). Returns `nil` when a retry for the
+    /// same audio is already in flight (double-tap guard).
     @discardableResult
-    public func startRetry(_ handle: RecoveryHandle) async -> Task<DictationOutcome, Never> {
+    public func startRetry(_ handle: RecoveryHandle) async -> Task<DictationOutcome, Never>? {
+        guard activeRetries.insert(handle.audioID).inserted else {
+            Log.event("retry_duplicate_ignored", category: .session)
+            return nil
+        }
         async let bundleID = focus.frontmostBundleID()
         let context = UtteranceContext(
             index: await serializer.reserve(),
             recordingBundleID: await bundleID
         )
         return Task {
-            await self.run(context) { session in
+            let outcome = await self.run(context) { session in
                 guard let recovery = self.recovery else { throw UnrecoveredUtterance(audioID: nil) }
                 // Synthetic transitions: there is no live mic for a retry, but
                 // the lifecycle (and its observers) stay uniform.
                 try await session.startRecording()
                 try await session.endRecording()
-                let transcript = try await recovery.retryTranscribe(audioID: handle.audioID)
-                await self.history.deleteRecord(handle.historyID)
-                return transcript
+                return try await recovery.retryTranscribe(audioID: handle.audioID)
             } failureRecovery: { error in
                 // Keep the SAME handle alive unless the audio itself is gone.
                 if let unrecovered = error as? UnrecoveredUtterance, unrecovered.audioID == nil {
@@ -116,7 +126,17 @@ public actor SessionCoordinator {
                 }
                 return handle
             }
+            if case .completed = outcome {
+                await self.history.deleteRecord(handle.historyID)
+                await self.recovery?.discardRecovered(audioID: handle.audioID)
+            }
+            await self.finishRetry(handle.audioID)
+            return outcome
         }
+    }
+
+    private func finishRetry(_ audioID: String) {
+        activeRetries.remove(audioID)
     }
 
     private func run(_ context: UtteranceContext) async -> DictationOutcome {
