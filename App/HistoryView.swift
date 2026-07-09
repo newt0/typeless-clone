@@ -12,6 +12,10 @@ struct HistoryView: View {
     @State private var query = ""
     @State private var expanded: Set<String> = []
     @State private var confirmDeleteAll = false
+    /// Serializes competing reloads: five triggers can interleave (search
+    /// edits vs FTS/LIKE latency differences), and a stale completion must
+    /// not overwrite a newer one (review finding). MainActor-confined.
+    @State private var reloadGeneration = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,7 +30,9 @@ struct HistoryView: View {
             }
         }
         .frame(minWidth: 560, minHeight: 400)
-        .task(id: hub.pipelineReady) { await reload() }
+        // Keyed on the refresh tick: reopening the cached window bumps it, so
+        // dictations made while the window was closed appear (review finding).
+        .task(id: hub.historyRefreshTick) { await reload() }
     }
 
     @ViewBuilder
@@ -57,8 +63,11 @@ struct HistoryView: View {
             Text("\(records.count) 件")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
+            // Only offered from the UNFILTERED view: deleteAll() is global,
+            // and an empty search result must not invite wiping unseen rows
+            // (review finding — data-loss class).
             Button("すべて削除…", role: .destructive) { confirmDeleteAll = true }
-                .disabled(records.isEmpty && query.isEmpty)
+                .disabled(records.isEmpty || !query.isEmpty)
         }
         .padding(8)
         .confirmationDialog("履歴をすべて削除しますか？", isPresented: $confirmDeleteAll) {
@@ -69,7 +78,7 @@ struct HistoryView: View {
                 }
             }
         } message: {
-            Text("この操作は取り消せません。")
+            Text("すべての履歴（\(records.count) 件）を削除します。この操作は取り消せません。")
         }
     }
 
@@ -82,7 +91,7 @@ struct HistoryView: View {
                     .lineLimit(expanded.contains(record.uuid) ? nil : 2)
                     .foregroundStyle(untranscribed ? .secondary : .primary)
                 Spacer(minLength: 8)
-                badge(record)
+                badge(record, untranscribed: untranscribed)
             }
             if expanded.contains(record.uuid), record.formattedText != nil, !record.rawText.isEmpty {
                 Text("認識結果: \(record.rawText)")
@@ -134,12 +143,12 @@ struct HistoryView: View {
         return text.isEmpty ? record.rawText : text
     }
 
-    private func badge(_ record: DictationRecord) -> some View {
+    private func badge(_ record: DictationRecord, untranscribed: Bool) -> some View {
         let (label, color): (String, Color) = switch InsertResult(rawValue: record.insertResult ?? "") {
         case .pasted, .pastedViaAppleScript: ("挿入済み", .green)
         case .clipboardFallback: ("⌘V 待ち", .orange)
         case .blockedSecureInput: ("セキュア入力", .gray)
-        case nil: (record.rawText.isEmpty && record.formattedText == nil ? "未転写" : "未挿入", .gray)
+        case nil: (untranscribed ? "未転写" : "未挿入", .gray)
         }
         return Text(label)
             .font(.caption2)
@@ -153,12 +162,18 @@ struct HistoryView: View {
 
     private func reload() async {
         guard let store = hub.historyStore else { return }
+        reloadGeneration += 1
+        let generation = reloadGeneration
         let trimmed = query.trimmingCharacters(in: .whitespaces)
+        let result: [DictationRecord]
         if trimmed.isEmpty {
-            records = (try? await store.recent(limit: 200)) ?? []
+            result = (try? await store.recent(limit: 200)) ?? []
         } else {
-            records = (try? await store.search(trimmed, limit: 200)) ?? []
+            result = (try? await store.search(trimmed, limit: 200)) ?? []
         }
+        // A newer reload started while this one was in flight — drop it.
+        guard generation == reloadGeneration else { return }
+        records = result
     }
 
     private func copy(_ record: DictationRecord) {

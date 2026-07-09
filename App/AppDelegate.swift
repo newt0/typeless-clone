@@ -214,6 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         historyWindow?.makeKeyAndOrderFront(nil)
+        settingsHub.historyRefreshTick += 1
         Log.event("history_window_opened", category: .history)
     }
 
@@ -342,6 +343,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.pressContinuation?.yield(.retry(handle))
         }
         settingsHub.pipelineReady = true
+        settingsHub.historyRefreshTick += 1
         Log.event("pipeline_ready", category: .session)
     }
 }

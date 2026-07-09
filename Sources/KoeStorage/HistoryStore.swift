@@ -105,11 +105,11 @@ public actor HistoryStore: HistoryWriting {
     }
 
     public func updateFormatted(_ id: UUID, text: String) async {
-        await update(id, sql: "UPDATE dictations SET formattedText = ? WHERE uuid = ?", value: text)
+        await update(sql: "UPDATE dictations SET formattedText = ? WHERE uuid = ?", arguments: [text, id.uuidString])
     }
 
     public func updateInsertResult(_ id: UUID, result: InsertResult) async {
-        await update(id, sql: "UPDATE dictations SET insertResult = ? WHERE uuid = ?", value: result.rawValue)
+        await update(sql: "UPDATE dictations SET insertResult = ? WHERE uuid = ?", arguments: [result.rawValue, id.uuidString])
     }
 
     /// M4-T3 double-fault audit row: the utterance's audio could not be
@@ -133,16 +133,7 @@ public actor HistoryStore: HistoryWriting {
 
     /// M7-T2 👎 feedback (rework-rate proxy metric, §1.4); `nil` clears it.
     public func updateFeedback(_ id: UUID, feedback: Int?) async {
-        do {
-            try await dbQueue.write { db in
-                try db.execute(
-                    sql: "UPDATE dictations SET feedback = ? WHERE uuid = ?",
-                    arguments: [feedback, id.uuidString]
-                )
-            }
-        } catch {
-            Log.error("history_update_failed", category: .history)
-        }
+        await update(sql: "UPDATE dictations SET feedback = ? WHERE uuid = ?", arguments: [feedback, id.uuidString])
     }
 
     public func deleteRecord(_ id: UUID) async {
@@ -153,10 +144,10 @@ public actor HistoryStore: HistoryWriting {
         }
     }
 
-    private func update(_ id: UUID, sql: String, value: String) async {
+    private func update(sql: String, arguments: StatementArguments) async {
         do {
             try await dbQueue.write { db in
-                try db.execute(sql: sql, arguments: [value, id.uuidString])
+                try db.execute(sql: sql, arguments: arguments)
             }
         } catch {
             Log.error("history_update_failed", category: .history)
