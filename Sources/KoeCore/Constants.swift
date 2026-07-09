@@ -46,6 +46,10 @@ public enum KoeConstants {
     /// `tapDisabled*` re-enable, and the path that detects Accessibility
     /// revocation.
     public static let tapLivenessInterval: Duration = .seconds(60)
+    /// After an Accessibility revocation, how often to check for a re-grant
+    /// so the hotkey revives without a relaunch (M11-T2). Faster than the
+    /// liveness interval — the user is actively fixing the permission. [tune]
+    public static let axRegrantPollInterval: Duration = .seconds(5)
 
     // MARK: Formatting pipeline (Design §5.1)
 

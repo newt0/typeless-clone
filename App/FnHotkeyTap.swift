@@ -37,16 +37,20 @@ final class FnHotkeyTap {
     /// Invoked when the liveness check finds Accessibility was revoked (the tap
     /// is torn down first). The caller surfaces the ⚠︎ warning state.
     private let onRevoked: () -> Void
+    private let onRearmed: () -> Void
+    private var regrantTask: Task<Void, Never>?
 
     init(
         mode: HotkeyMode = .hold,
         onStart: @escaping () -> Void,
         onStop: @escaping () -> Void,
-        onRevoked: @escaping () -> Void = {}
+        onRevoked: @escaping () -> Void = {},
+        onRearmed: @escaping () -> Void = {}
     ) {
         self.engine = HotkeyEngine(mode: mode)
         self.activation = HotkeyActivation(onStart: onStart, onStop: onStop)
         self.onRevoked = onRevoked
+        self.onRearmed = onRearmed
     }
 
     /// Create and enable the tap. Returns `false` (without crashing) when
@@ -151,6 +155,33 @@ final class FnHotkeyTap {
             activation.apply(engine.reset())
             stop()
             onRevoked()
+            // The hotkey must never stay silently dead (M11-T2): keep watching
+            // for the re-grant and revive without a relaunch.
+            startRegrantWatcher()
+        }
+    }
+
+    /// Poll for the Accessibility re-grant after a revocation; on success the
+    /// tap rebuilds (idempotent ``start()``) and the caller clears its ⚠︎.
+    private func startRegrantWatcher() {
+        regrantTask?.cancel()
+        regrantTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: KoeConstants.axRegrantPollInterval)
+                guard !Task.isCancelled, let self else { return }
+                guard AXIsProcessTrusted() else { continue }
+                if self.start() {
+                    Log.event("hotkey_ax_rearmed", category: .permission)
+                    self.onRearmed()
+                } else {
+                    // Known post-grant quirk: the tap may refuse to create
+                    // until relaunch — leave the ⚠︎ latched; the permissions
+                    // panel offers the restart guidance.
+                    Log.error("hotkey_rearm_failed", category: .permission)
+                }
+                self.regrantTask = nil
+                return
+            }
         }
     }
 
