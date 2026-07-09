@@ -71,7 +71,12 @@ final class AudioCaptureEngine {
         self.preferBuiltIn = preferBuiltIn
         self.onCapReached = onCapReached
         self.onDeviceSwitched = onDeviceSwitched
-        engine.prepare()
+        // No engine.prepare() here: the graph is empty until start() installs
+        // the input tap, and preparing an empty graph raises an ObjC exception
+        // ("inputNode != nullptr || outputNode != nullptr") that AppKit
+        // swallows — silently killing the rest of applicationDidFinishLaunching
+        // (observed live: hotkeys and pipeline never wired, no ⚠︎, no log).
+        // start() → engine.start() prepares the real graph implicitly.
 
         // Warm the device cache and start listening now (not at first record),
         // so the hotkey path reads devices in memory and a route change is

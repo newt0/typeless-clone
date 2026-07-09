@@ -1,24 +1,35 @@
 import AppKit
 import KoeCore
+import KoeProviders
+import KoeStorage
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItemController: StatusItemController?
     private var hotkeyTap: FnHotkeyTap?
     private var altHotkey: AltHotkeyMonitor?
     private var audioEngine: AudioCaptureEngine?
-    private var drainTask: Task<Void, Never>?
     private var pasteSimulator: PasteSimulator?
+    private var audioSource: HotkeyAudioSource?
+    private var coordinator: SessionCoordinator?
+    private var historyStore: HistoryStore?
+    private var dictionaryStore: DictionaryStore?
+    private var pressLoopTask: Task<Void, Never>?
+    private var pressContinuation: AsyncStream<Void>.Continuation?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Agent app: no Dock icon, no app switcher (paired with LSUIElement).
         NSApp.setActivationPolicy(.accessory)
-        // Path 1 text insertion (M5-T2). Not yet wired into the pipeline (needs
-        // STT+format); constructed now so the DEBUG QA hook can drive it.
-        let pasteSimulator = PasteSimulator()
+
+        // One AX/frontmost reader shared by the inserter (preflight/verify) and
+        // the coordinator (per-utterance recording-app capture).
+        let contextProvider = InsertionContextProvider()
+        let pasteSimulator = PasteSimulator(context: contextProvider)
         self.pasteSimulator = pasteSimulator
-        // DEBUG QA hooks (M5-T2/T3): the STT→format→paste pipeline isn't wired
-        // yet, so these delayed test pastes let the owner exercise each insertion
-        // path by hand. Click a menu item, then focus a target field within 2s.
+
+        // DEBUG QA hooks (M5-T2/T3): delayed test pastes that exercise each
+        // insertion path by hand, independent of the live pipeline. Click a
+        // menu item, then focus a target field within 2s.
         #if DEBUG
         let sample = "Koe paste test — こんにちは、世界。"
         func scheduledPaste(_ label: StaticString, _ body: @escaping @MainActor () async -> Void) -> () -> Void {
@@ -49,16 +60,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.event("app_launched", category: .app)
 
         // Audio capture (M3-T1/M3-T2). Built prepared-but-stopped; the hotkey
-        // only pays start(). Until the STT client is wired (M4), the produced
-        // chunk stream is just drained so it can't build up — SessionAudioBuffer
-        // is the retained copy for resend.
-        //
-        // "Prefer built-in mic" defaults ON (M3-T2) so a freshly-connected
-        // Bluetooth headset (HFP, poor STT) can't hijack dictation; the closure
-        // is re-read each start so a future Settings toggle takes effect without
-        // rebuilding the engine. On a mid-session device switch (AirPods drop)
-        // the HUD switch notice lands in M9 — for now capture continues silently
-        // and the engine logs `audio_device_switched`.
+        // only pays start(). "Prefer built-in mic" defaults ON (M3-T2); the
+        // closure is re-read each start so a future Settings toggle takes
+        // effect without rebuilding the engine. Mid-session device switches
+        // continue capture silently until the M9 HUD notice lands.
         let audioEngine = AudioCaptureEngine(
             preferBuiltIn: { UserDefaults.standard.object(forKey: AppDefaultsKey.preferBuiltInMic) as? Bool ?? true },
             onCapReached: { statusItemController.setRecording(false) },
@@ -66,20 +71,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         self.audioEngine = audioEngine
 
-        // Hotkey press starts recording and drains the chunk stream; release
-        // stops it. Both hotkeys share this glue. The icon flips to "recording"
-        // only once capture actually began — `start()` returns nil on failure
-        // (e.g. mic TCC not granted) or when already recording, and in both
-        // cases we leave the icon and the live drain task untouched (so a
-        // second hotkey firing mid-hold can't orphan the running stream).
+        let audioSource = HotkeyAudioSource()
+        self.audioSource = audioSource
+
+        // Press queue: a single consumer awaits each startUtterance() before
+        // taking the next press, which is what maps press order onto FIFO
+        // ticket order (batch-B contract in SessionCoordinator.startUtterance).
+        // The hotkey callback itself only yields — never blocks the main actor.
+        let (presses, pressContinuation) = AsyncStream<Void>.makeStream()
+        self.pressContinuation = pressContinuation
+        pressLoopTask = Task { [weak self] in
+            for await _ in presses {
+                guard let coordinator = self?.coordinator else { continue }
+                await coordinator.startUtterance()
+            }
+        }
+
+        // Hotkey press starts recording and hands the chunk stream to the
+        // pipeline; release stops the mic, which ends the stream and lets STT
+        // finalize. The icon flips only once capture actually began — start()
+        // returns nil on failure (mic TCC not granted) or when already
+        // recording (a second hotkey firing mid-hold changes nothing).
         let onStart: () -> Void = { [weak self] in
-            guard let stream = audioEngine.start() else { return }
-            statusItemController.setRecording(true)
-            self?.drainTask?.cancel()
-            self?.drainTask = Task { for await _ in stream {} }
+            guard let self else { return }
+            guard self.coordinator != nil else {
+                // No pipeline (missing key / store failure / still assembling):
+                // don't record audio nobody can transcribe.
+                Log.event("hotkey_ignored_no_pipeline", category: .session)
+                return
+            }
+            guard let stream = self.audioEngine?.start() else { return }
+            self.statusItemController?.setRecording(true)
+            self.audioSource?.provide(stream)
+            self.pressContinuation?.yield(())
         }
         let onStop: () -> Void = { [weak self] in
-            statusItemController.setRecording(false)
+            self?.statusItemController?.setRecording(false)
             self?.audioEngine?.stop()
         }
 
@@ -101,5 +128,108 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alt = AltHotkeyMonitor(onStart: onStart, onStop: onStop)
         alt.start()
         self.altHotkey = alt
+
+        // The real pipeline (E2E wiring PR-B): press → audio → Speechmatics →
+        // Gemini formatting → paste, with write-ahead history. Assembled AFTER
+        // the hotkeys and menu are wired, asynchronously: the first Keychain
+        // read can put up a user-consent dialog, and the app must stay fully
+        // interactive (hotkeys log-and-ignore until the pipeline is ready). If
+        // assembly fails (missing STT key, store open failure) the hotkeys stay
+        // inert and the status item latches ⚠︎.
+        Task {
+            await self.assemblePipeline(
+                inserter: pasteSimulator,
+                focus: contextProvider,
+                audioSource: audioSource,
+                statusItemController: statusItemController
+            )
+        }
+    }
+
+    /// Composition root: construct the provider clients, stores, and the
+    /// coordinator. `coordinator` stays nil on any hard failure — the hotkeys
+    /// check it per press.
+    private func assemblePipeline(
+        inserter: PasteSimulator,
+        focus: InsertionContextProvider,
+        audioSource: HotkeyAudioSource,
+        statusItemController: StatusItemController
+    ) async {
+        // Keychain reads happen off the main actor: a pending consent dialog
+        // (first read of a CLI-created item) blocks the calling thread until
+        // the user answers, and that must never freeze the menu/hotkeys.
+        let secrets = KeychainSecretStore()
+        let (sttKey, geminiKey) = await Task.detached {
+            (secrets.read(.speechmaticsAPIKey), secrets.read(.geminiAPIKey))
+        }.value
+
+        // No STT key → no dictation is possible at all: hard block with ⚠︎.
+        guard let sttKey else {
+            Log.error("config_missing_stt_key", category: .app)
+            statusItemController.setConfigurationWarning(true)
+            return
+        }
+
+        // Stores live in Application Support. Without the history DB the
+        // invariant-1 write-ahead net is gone, so a failed open also hard-blocks
+        // rather than running a pipeline that could lose text silently.
+        let history: HistoryStore
+        let dictionary: DictionaryStore
+        do {
+            let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("dev.newt.Koe", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            history = try HistoryStore(path: dir.appendingPathComponent("history.sqlite").path)
+            dictionary = try DictionaryStore(path: dir.appendingPathComponent("dictionary.sqlite").path)
+        } catch {
+            Log.error("config_store_open_failed", category: .history)
+            statusItemController.setConfigurationWarning(true)
+            return
+        }
+        self.historyStore = history
+        self.dictionaryStore = dictionary
+
+        let stt = SpeechmaticsClient(apiKey: sttKey)
+        // Hide TLS+WebSocket setup (~300ms) before the first press.
+        Task { try? await stt.prewarm() }
+
+        // No Gemini key → dictation still works, unformatted: MissingKeyLLMClient
+        // fails instantly and LLMFormatter degrades to the raw transcript
+        // (invariant 2) — strictly better than blocking.
+        let llmClient: any LLMClient
+        if let geminiKey {
+            llmClient = GeminiClient(apiKey: geminiKey)
+        } else {
+            Log.error("config_missing_llm_key", category: .app)
+            llmClient = MissingKeyLLMClient()
+        }
+
+        // STT vocabulary is fetched fresh per utterance; the LLM prompt
+        // dictionary is a launch snapshot (live refresh lands with M10's
+        // dictionary editor — logged gap, decisions.md session 13).
+        let transcriber = STTTranscriber(
+            client: stt,
+            vocab: { (try? await dictionary.sttVocabulary()) ?? [] }
+        )
+
+        let entries = (try? await dictionary.promptEntries()) ?? []
+        let formatter = LLMFormatter(client: llmClient, dictionary: entries)
+        coordinator = SessionCoordinator(
+            audio: audioSource,
+            stt: transcriber,
+            formatter: formatter,
+            inserter: inserter,
+            history: history,
+            focus: focus
+        )
+        Log.event("pipeline_ready", category: .session)
+    }
+}
+
+/// Stands in for Gemini when no API key is configured: fails instantly (no
+/// network) so `LLMFormatter`'s degrade path inserts the raw transcript.
+private struct MissingKeyLLMClient: LLMClient {
+    func complete(system: String, user: String) async throws -> String {
+        throw LLMError.http(status: 401)
     }
 }

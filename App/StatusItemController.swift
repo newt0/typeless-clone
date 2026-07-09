@@ -15,6 +15,10 @@ final class StatusItemController {
     /// persists across recording toggles. Kept separate from `recording` so a
     /// working alt hotkey can't silently clear the ⚠︎ for a dead Fn path.
     private var permissionWarning = false
+    /// Latched: the pipeline could not be assembled (missing Speechmatics key,
+    /// history DB failed to open). Same ⚠︎ as `permissionWarning` but its own
+    /// flag + log event so the causes stay distinguishable in Console.
+    private var configurationWarning = false
 
     /// DEBUG-only QA actions: delayed pastes so the owner can exercise each
     /// insertion path (M5-T2/T3) before the STT→format→paste pipeline is wired
@@ -38,14 +42,19 @@ final class StatusItemController {
         applyIcon()
     }
 
+    func setConfigurationWarning(_ on: Bool) {
+        configurationWarning = on
+        applyIcon()
+    }
+
     private func applyIcon() {
         guard let button = statusItem.button else { return }
         // Recording is the transient overlay; the latched ⚠︎ shows through again
-        // as soon as recording stops.
+        // as soon as recording stops (permission > configuration > normal).
         let symbol: String
         if recording {
             symbol = "mic.fill"
-        } else if permissionWarning {
+        } else if permissionWarning || configurationWarning {
             symbol = "exclamationmark.triangle"
         } else {
             symbol = "mic"

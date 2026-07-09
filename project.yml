@@ -28,6 +28,10 @@ targets:
     dependencies:
       - package: KoeKit
         product: KoeCore
+      - package: KoeKit
+        product: KoeStorage
+      - package: KoeKit
+        product: KoeProviders
       - package: KeyboardShortcuts
     settings:
       base:
