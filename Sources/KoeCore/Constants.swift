@@ -80,4 +80,13 @@ public enum KoeConstants {
     public static let llmTotalTimeout: Duration = .seconds(6)
     /// Per insertion stage; exceeding advances to the next fallback path.
     public static let insertionStageTimeout: Duration = .milliseconds(500)
+
+    // MARK: HUD (Design §7.5) — [tune at owner QA]
+
+    /// "Done" flash before the panel hides.
+    public static let hudDoneDwell: Duration = .milliseconds(700)
+    /// Clipboard landing lingers — the user must notice "press ⌘V".
+    public static let hudClipboardDwell: Duration = .seconds(4)
+    /// Secure-block / failure / side-notice dwell.
+    public static let hudNoticeDwell: Duration = .milliseconds(2500)
 }

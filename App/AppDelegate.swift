@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var dictionaryStore: DictionaryStore?
     private var pressLoopTask: Task<Void, Never>?
     private var pressContinuation: AsyncStream<Void>.Continuation?
+    private var hudController: HUDPanelController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Agent app: no Dock icon, no app switcher (paired with LSUIElement).
@@ -59,15 +60,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.statusItemController = statusItemController
         Log.event("app_launched", category: .app)
 
-        // Audio capture (M3-T1/M3-T2). Built prepared-but-stopped; the hotkey
-        // only pays start(). "Prefer built-in mic" defaults ON (M3-T2); the
+        // HUD panel (M9-T1): renders the pipeline lifecycle + engine notices.
+        let hud = HUDPanelController()
+        self.hudController = hud
+
+        // Audio capture (M3-T1/M3-T2). "Prefer built-in mic" defaults ON; the
         // closure is re-read each start so a future Settings toggle takes
-        // effect without rebuilding the engine. Mid-session device switches
-        // continue capture silently until the M9 HUD notice lands.
+        // effect without rebuilding the engine. Cap → notice; fault → icon
+        // reset only (the failure reaches the HUD through the pipeline).
         let audioEngine = AudioCaptureEngine(
             preferBuiltIn: { UserDefaults.standard.object(forKey: AppDefaultsKey.preferBuiltInMic) as? Bool ?? true },
-            onCapReached: { statusItemController.setRecording(false) },
-            onDeviceSwitched: { _ in /* M9 HUD switch notice */ }
+            onCapReached: {
+                statusItemController.setRecording(false)
+                hud.notify(.capReached)
+            },
+            onCaptureFault: { statusItemController.setRecording(false) },
+            onDeviceSwitched: { device in hud.notify(.deviceSwitched(name: device.name)) }
         )
         self.audioEngine = audioEngine
 
@@ -219,10 +227,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // STT vocabulary is fetched fresh per utterance; the LLM prompt
         // dictionary is a launch snapshot (live refresh lands with M10's
-        // dictionary editor — logged gap, decisions.md session 13).
+        // dictionary editor — logged gap, decisions.md session 13). Partials
+        // feed the HUD's live line only — never persisted or logged.
+        let hud = hudController
         let transcriber = STTTranscriber(
             client: stt,
-            vocab: { (try? await dictionary.sttVocabulary()) ?? [] }
+            vocab: { (try? await dictionary.sttVocabulary()) ?? [] },
+            onPartial: { text, context in hud?.partial(text, context) }
         )
 
         let entries = (try? await dictionary.promptEntries()) ?? []
@@ -233,7 +244,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             formatter: formatter,
             inserter: inserter,
             history: history,
-            focus: focus
+            focus: focus,
+            ui: hud
         )
         Log.event("pipeline_ready", category: .session)
     }

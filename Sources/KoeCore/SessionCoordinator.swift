@@ -23,6 +23,8 @@ public actor SessionCoordinator {
     private let serializer: InsertionSerializer
     private let now: @Sendable () -> Date
     private let logger: DictationEventLogger
+    /// UI observation seam (M9 HUD); `nil` = headless (tests, no UI yet).
+    private let ui: (any DictationUIObserving)?
 
     public init(
         audio: AudioCapturing,
@@ -31,6 +33,7 @@ public actor SessionCoordinator {
         inserter: TextInserting,
         history: HistoryWriting,
         focus: ContextProviding,
+        ui: (any DictationUIObserving)? = nil,
         serializer: InsertionSerializer = InsertionSerializer(),
         now: @escaping @Sendable () -> Date = { Date() },
         logger: DictationEventLogger = NoopDictationEventLogger()
@@ -41,6 +44,7 @@ public actor SessionCoordinator {
         self.inserter = inserter
         self.history = history
         self.focus = focus
+        self.ui = ui
         self.serializer = serializer
         self.now = now
         self.logger = logger
@@ -74,7 +78,14 @@ public actor SessionCoordinator {
 
     private func run(_ context: UtteranceContext) async -> DictationOutcome {
         let session = DictationSession(now: now, logger: logger)
+        ui?.utteranceBegan(context, states: session.states)
         let outcome = await runStages(session, context)
+        switch outcome {
+        case .completed(let result):
+            ui?.utteranceLanded(context, result: result)
+        case .failed:
+            ui?.utteranceFailed(context)
+        }
         // Release the FIFO slot exactly once, in ticket order, on every path —
         // so a cancelled/failed utterance never blocks the ones behind it
         // (invariant 1 / §10.4). If the stages never reached insertion, this

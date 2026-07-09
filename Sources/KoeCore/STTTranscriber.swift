@@ -17,15 +17,20 @@ public struct STTTranscriber: Transcribing {
     /// client takes it per `beginUtterance`), so dictionary edits apply to STT
     /// without an app restart.
     private let vocab: @Sendable () async -> [STTVocabTerm]
+    /// Live-partial side channel for the HUD (M9). Called per `.partial` event
+    /// with the utterance it belongs to; display-only, never persisted/logged.
+    private let onPartial: @Sendable (String, UtteranceContext) -> Void
     private let tailTimeout: Duration
 
     public init(
         client: STTClient,
         vocab: @escaping @Sendable () async -> [STTVocabTerm] = { [] },
+        onPartial: @escaping @Sendable (String, UtteranceContext) -> Void = { _, _ in },
         tailTimeout: Duration = KoeConstants.sttStallTimeout
     ) {
         self.client = client
         self.vocab = vocab
+        self.onPartial = onPartial
         self.tailTimeout = tailTimeout
     }
 
@@ -46,6 +51,7 @@ public struct STTTranscriber: Transcribing {
         let events = try await client.beginUtterance(vocab: await vocab())
         let client = self.client
         let tailTimeout = self.tailTimeout
+        let onPartial = self.onPartial
         // The seam contract is exactly-once on EVERY exit: the provider can
         // finalize before the mic stream ends, and a failed send must not skip
         // the callback — either way the session has to leave `recording`.
@@ -64,8 +70,8 @@ public struct STTTranscriber: Transcribing {
                     var finals: [String] = []
                     for await event in events {
                         switch event {
-                        case .partial:
-                            break // HUD live text consumes partials, not this seam.
+                        case .partial(let text):
+                            onPartial(text, context) // HUD live line (M9)
                         case .final(let text):
                             finals.append(text)
                         case .error(let error):
