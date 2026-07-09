@@ -6,6 +6,8 @@ Protocol: see `06-autonomous-workflow.md`. Statuses: `todo` / `in-progress` / `p
 
 Environment resolved: **Xcode 26.6 installed, `gh` authenticated, autonomous PR flow proven** (PR #1 merged via CI-green → merge commit). Full test suite runs with `./scripts/test.sh`.
 
+**2026-07-09 — full-codebase review complete (session 12, owner-directed).** Whole codebase reviewed batch-by-batch A–F; confirmed findings fixed under the standard 1-branch/1-PR gates. Merged: **PR #20** (batch A insertion — AppleScript `terminationHandler`-before-`run` FIFO-stall, cancellation-safe paste choreography, bounded AX reads), **PR #21** (batch B — `startUtterance` FIFO-ordering doc contract), **PR #22** (batch D — orphaned `llmTotalTimeout` now enforced via a new cancellation-correct `Deadline.run` primitive shared by `LLMFormatter` + `SpeechmaticsClient.verify`; `format` re-throws `CancellationError` so a cancelled utterance never inserts). Batches C/E/F: no behavior bugs (reviewed-clean notes + forward-looking M9 callback-split note in `docs/decisions.md`). 164 tests green; `main` CI green. Details: `docs/decisions.md` (session 12 entries).
+
 - **PR #1 (merged)**: SwiftPM package (`KoeKit`/`KoeCore`), Constants, `DictationSession` state machine (M1-T1), CI, scripts.
 - **M1-T2** (this branch): `InsertionSerializer` FIFO gate + `SessionCoordinator` + collaborator seams; 18 tests total green.
 
