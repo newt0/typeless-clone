@@ -25,14 +25,51 @@ private actor Gate {
 }
 
 private struct PassthroughAudio: AudioCapturing {
-    func record(_ context: UtteranceContext) async throws -> Data {
-        Data("u\(context.index)".utf8)
+    func record(_ context: UtteranceContext) async throws -> AsyncThrowingStream<Data, any Error> {
+        let data = Data("u\(context.index)".utf8)
+        return AsyncThrowingStream { continuation in
+            continuation.yield(data)
+            continuation.finish()
+        }
     }
 }
 
 private struct EchoTranscriber: Transcribing {
-    func transcribe(_ audio: Data, _ context: UtteranceContext) async throws -> String {
-        String(decoding: audio, as: UTF8.self)
+    func transcribe(
+        _ audio: AsyncThrowingStream<Data, any Error>,
+        _ context: UtteranceContext,
+        onRecordingEnded: @escaping @Sendable () async -> Void
+    ) async throws -> String {
+        var collected = Data()
+        for try await chunk in audio { collected.append(chunk) }
+        await onRecordingEnded()
+        return String(decoding: collected, as: UTF8.self)
+    }
+}
+
+/// Fixed frontmost-app answer for every utterance.
+private struct StaticFocus: ContextProviding {
+    var bundleID: String?
+    init(bundleID: String? = nil) { self.bundleID = bundleID }
+    func frontmostBundleID() async -> String? { bundleID }
+}
+
+/// Returns the scripted bundle ids one per call — models the user switching
+/// apps between two presses.
+private actor SequencedFocus: ContextProviding {
+    private var values: [String?]
+    init(_ values: [String?]) { self.values = values }
+    func frontmostBundleID() async -> String? {
+        values.isEmpty ? nil : values.removeFirst()
+    }
+}
+
+/// Captures the exact contexts insertion sees.
+private actor ContextSpyInserter: TextInserting {
+    private(set) var contexts: [UtteranceContext] = []
+    func insert(_ output: PipelineOutput, _ context: UtteranceContext) async throws -> InsertResult {
+        contexts.append(context)
+        return .pasted
     }
 }
 
@@ -87,6 +124,7 @@ private func makeCoordinator(
         formatter: formatter,
         inserter: RecordingInserter(log: log, failIndices: failIndices),
         history: SpyHistory(log: log),
+        focus: StaticFocus(),
         serializer: serializer
     )
 }
@@ -133,6 +171,42 @@ struct SessionCoordinatorTests {
 
         let inserts = await log.events.filter { $0.hasPrefix("insert:") }
         #expect(inserts == ["insert:u0!", "insert:u1!"])
+    }
+
+    @Test("recording bundle id is captured at start and reaches insertion")
+    func bundleIDReachesInsertion() async {
+        let inserter = ContextSpyInserter()
+        let coord = SessionCoordinator(
+            audio: PassthroughAudio(),
+            stt: EchoTranscriber(),
+            formatter: GatedFormatter(gate: nil, gateFor: nil),
+            inserter: inserter,
+            history: SpyHistory(log: EventLog()),
+            focus: StaticFocus(bundleID: "com.apple.TextEdit")
+        )
+        _ = await (await coord.startUtterance()).value
+        #expect(await inserter.contexts.map(\.recordingBundleID) == ["com.apple.TextEdit"])
+    }
+
+    @Test("two utterances each carry the app they were spoken into")
+    func perUtteranceBundleID() async {
+        // The M5-T2 review gap: a shared "current frontmost app" closure could
+        // not tell two overlapping utterances apart. Per-utterance capture must.
+        let inserter = ContextSpyInserter()
+        let coord = SessionCoordinator(
+            audio: PassthroughAudio(),
+            stt: EchoTranscriber(),
+            formatter: GatedFormatter(gate: nil, gateFor: nil),
+            inserter: inserter,
+            history: SpyHistory(log: EventLog()),
+            focus: SequencedFocus(["com.apple.TextEdit", "com.tinyspeck.slackmacgap"])
+        )
+        let t0 = await coord.startUtterance()
+        let t1 = await coord.startUtterance()
+        _ = await t0.value
+        _ = await t1.value
+        let byTicket = await inserter.contexts.sorted { $0.index < $1.index }
+        #expect(byTicket.map(\.recordingBundleID) == ["com.apple.TextEdit", "com.tinyspeck.slackmacgap"])
     }
 
     @Test("a failed insertion does not block the following utterance")

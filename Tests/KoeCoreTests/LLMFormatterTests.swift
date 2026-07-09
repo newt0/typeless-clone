@@ -19,6 +19,15 @@ private struct MockLLM: LLMClient {
     }
 }
 
+/// Captures the assembled system prompt so context threading can be asserted.
+private actor PromptCapturingLLM: LLMClient {
+    private(set) var system: String?
+    func complete(system: String, user: String) async throws -> String {
+        self.system = system
+        return "明日資料を送ります。"
+    }
+}
+
 private let ctx = UtteranceContext(index: 0)
 
 @Suite("LLMFormatter")
@@ -52,6 +61,17 @@ struct LLMFormatterTests {
         let out = try await f.format(raw, ctx)
         #expect(out.degraded)
         #expect(out.text == raw)
+    }
+
+    @Test("the prompt's app context comes from the utterance, not a live read")
+    func appContextFromUtterance() async throws {
+        let llm = PromptCapturingLLM()
+        let f = LLMFormatter(client: llm)
+        _ = try await f.format(
+            "えーと明日資料を送ります",
+            UtteranceContext(index: 0, recordingBundleID: "com.tinyspeck.slackmacgap")
+        )
+        #expect(await llm.system?.contains("com.tinyspeck.slackmacgap") == true)
     }
 
     @Test("a hung LLM request times out and degrades to raw (§10.3 total-time leg)")

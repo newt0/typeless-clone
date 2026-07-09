@@ -13,7 +13,6 @@ public struct LLMFormatter: Formatting {
     private let validator: OutputValidator
     private let style: WritingStyle
     private let dictionary: [DictionaryEntry]
-    private let frontmostApp: @Sendable () -> String?
     /// Total-time bound on one LLM request (Design §10.3 ladder); exceeding it
     /// degrades to the raw transcript instead of waiting out URLSession's own
     /// (much longer) timeout. Injectable for tests.
@@ -25,7 +24,6 @@ public struct LLMFormatter: Formatting {
         validator: OutputValidator = OutputValidator(),
         style: WritingStyle = .auto,
         dictionary: [DictionaryEntry] = [],
-        frontmostApp: @escaping @Sendable () -> String? = { nil },
         timeout: Duration = KoeConstants.llmTotalTimeout
     ) {
         self.client = client
@@ -33,16 +31,18 @@ public struct LLMFormatter: Formatting {
         self.validator = validator
         self.style = style
         self.dictionary = dictionary
-        self.frontmostApp = frontmostApp
         self.timeout = timeout
     }
 
     public func format(_ transcript: String, _ context: UtteranceContext) async throws -> PipelineOutput {
+        // App context comes from the utterance itself (captured at press time),
+        // not a live read: a live closure would race overlapping utterances and
+        // could name the wrong app after a mid-pipeline app switch.
         let prompt = assembler.assemble(
             transcript: transcript,
             style: style,
             dictionary: dictionary,
-            frontmostApp: frontmostApp()
+            frontmostApp: context.recordingBundleID
         )
         do {
             // Bound the request by the §10.3 total-time leg (the TTFT/retry leg

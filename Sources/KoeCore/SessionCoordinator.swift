@@ -19,6 +19,7 @@ public actor SessionCoordinator {
     private let formatter: Formatting
     private let inserter: TextInserting
     private let history: HistoryWriting
+    private let focus: ContextProviding
     private let serializer: InsertionSerializer
     private let now: @Sendable () -> Date
     private let logger: DictationEventLogger
@@ -29,6 +30,7 @@ public actor SessionCoordinator {
         formatter: Formatting,
         inserter: TextInserting,
         history: HistoryWriting,
+        focus: ContextProviding,
         serializer: InsertionSerializer = InsertionSerializer(),
         now: @escaping @Sendable () -> Date = { Date() },
         logger: DictationEventLogger = NoopDictationEventLogger()
@@ -38,6 +40,7 @@ public actor SessionCoordinator {
         self.formatter = formatter
         self.inserter = inserter
         self.history = history
+        self.focus = focus
         self.serializer = serializer
         self.now = now
         self.logger = logger
@@ -56,7 +59,16 @@ public actor SessionCoordinator {
     /// STATUS.md.
     @discardableResult
     public func startUtterance() async -> Task<DictationOutcome, Never> {
-        let context = UtteranceContext(index: await serializer.reserve())
+        // Captured at press time, per utterance, so two overlapping dictations
+        // each carry the app they were spoken into (M5-T2 review note). The
+        // focus read is independent of the ticket, so both hops run in
+        // parallel; the caller-side await-per-press contract (doc above) is
+        // what orders tickets, not anything inside this method.
+        async let bundleID = focus.frontmostBundleID()
+        let context = UtteranceContext(
+            index: await serializer.reserve(),
+            recordingBundleID: await bundleID
+        )
         return Task { await self.run(context) }
     }
 
@@ -79,10 +91,21 @@ public actor SessionCoordinator {
     ) async -> DictationOutcome {
         do {
             try await session.startRecording()
-            let captured = try await audio.record(context)
-            try await session.endRecording()
-
-            let transcript = try await stt.transcribe(captured, context)
+            let audioStream = try await audio.record(context)
+            // Chunks flow to STT while the user is still speaking; the callback
+            // fires when the mic stream is exhausted (key-up / session cap) so
+            // the state machine leaves `recording` at true end-of-speech, not
+            // at transcript-complete.
+            let transcript = try await stt.transcribe(audioStream, context) {
+                do {
+                    try await session.endRecording()
+                } catch {
+                    // The callback can't rethrow; don't lose the signal — an
+                    // illegal transition here is a state-machine bug, not a
+                    // pipeline failure (invariant 4: event name only).
+                    Log.error("end_recording_illegal", category: .session)
+                }
+            }
             try await session.receiveFinalTranscript(transcript)
             // Write-ahead: the raw transcript is now durable regardless of what
             // fails downstream (Design §10.1).
@@ -100,6 +123,9 @@ public actor SessionCoordinator {
             try await session.finish()
             return .completed(result)
         } catch {
+            // No body text (invariant 4); stage-specific detail is logged where
+            // the failure originates (STT/LLM/insertion adapters).
+            Log.error("utterance_failed", category: .session)
             return .failed
         }
     }
