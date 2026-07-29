@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItemController: StatusItemController?
     private var hotkeyTap: FnHotkeyTap?
     private var altHotkey: AltHotkeyMonitor?
+    private var capsMonitor: CapsLockHIDMonitor?
     private var audioEngine: AudioCaptureEngine?
     private var pasteSimulator: PasteSimulator?
     private var audioSource: HotkeyAudioSource?
@@ -215,6 +216,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alt = AltHotkeyMonitor(onStart: onStart, onStop: onStop)
         alt.start()
         self.altHotkey = alt
+
+        // Caps Lock push-to-talk (raw HID monitor + machine-local hidutil
+        // suppressor; owner decision, decisions.md session 14). Opt-in — the
+        // Input Monitoring prompt must never hit users who didn't ask for it.
+        let caps = CapsLockHIDMonitor(onStart: onStart, onStop: onStop)
+        if AppSettings.capsLockHotkeyEnabled, !caps.start() {
+            statusItemController.setPermissionWarning(true)
+        }
+        self.capsMonitor = caps
+        settingsHub.applyCapsEnabled = { [weak self] enabled -> Bool in
+            guard let self, let caps = self.capsMonitor else { return false }
+            if enabled {
+                let armed = caps.start()
+                if !armed { self.statusItemController?.setPermissionWarning(true) }
+                return armed
+            }
+            caps.stop()
+            return true
+        }
 
         // First run: walk the user to a working dictation (M11-T1). Shown
         // after the hotkeys are wired so the test-dictation step works the

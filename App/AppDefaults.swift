@@ -18,6 +18,9 @@ enum AppDefaultsKey {
     static let telemetryOptOut = "telemetryOptOut"
     /// Fn push-to-talk enabled. Absent ⇒ ON (⌥Space stays independent).
     static let fnHotkeyEnabled = "fnHotkeyEnabled"
+    /// Caps Lock push-to-talk (IOKit HID monitor; needs Input Monitoring).
+    /// Absent ⇒ OFF — never prompt for the permission unless opted in.
+    static let capsLockHotkeyEnabled = "capsLockHotkeyEnabled"
     /// Per-app insertion overrides (M5-T3 table), JSON-encoded.
     static let insertionOverrides = "insertionOverrides"
     /// Onboarding finished (M11-T1). Absent ⇒ first run → show onboarding.

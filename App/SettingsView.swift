@@ -43,6 +43,9 @@ private struct GeneralSettingsTab: View {
     @State private var revertingLogin = false
     @State private var fnError = false
     @State private var revertingFn = false
+    @State private var capsEnabled = AppSettings.capsLockHotkeyEnabled
+    @State private var capsError = false
+    @State private var revertingCaps = false
 
     var body: some View {
         Form {
@@ -63,6 +66,24 @@ private struct GeneralSettingsTab: View {
                     }
                 if fnError {
                     Text("アクセシビリティ権限がないため有効化できません。システム設定 > プライバシーとセキュリティ > アクセシビリティ で Koe を許可してください。")
+                        .font(.caption).foregroundStyle(.red)
+                }
+                Toggle("Caps Lock 長押しで入力", isOn: $capsEnabled)
+                    .onChange(of: capsEnabled) { previous, on in
+                        guard !revertingCaps else { revertingCaps = false; return }
+                        if hub.applyCapsEnabled?(on) ?? false {
+                            AppSettings.capsLockHotkeyEnabled = on
+                            capsError = false
+                        } else if on {
+                            // Input Monitoring missing: revert visibly instead
+                            // of showing an ON toggle for a dead hotkey.
+                            capsError = true
+                            revertingCaps = true
+                            capsEnabled = previous
+                        }
+                    }
+                if capsError {
+                    Text("「入力監視」の許可が必要です。システム設定 > プライバシーとセキュリティ > 入力監視 で Koe を許可し、アプリを再起動してからもう一度オンにしてください。")
                         .font(.caption).foregroundStyle(.red)
                 }
                 KeyboardShortcuts.Recorder("代替ホットキー（押している間入力）:", name: .dictation)
