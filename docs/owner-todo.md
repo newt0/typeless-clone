@@ -15,26 +15,18 @@ Claude はコードを自律開発・自己マージします。ここに並ぶ�
 - Bundle ID 決定（`dev.newt.Koe`、恒久）
 - Gemini + Speechmatics API キーを Keychain に登録・検証済み
 - GitHub Actions の課金問題 → **リポジトリ public 化で解消**（2026-07-09、標準ランナー無料）
+- **Gemini は無料枠のまま使う**（オーナー決定 2026-07-29、decisions.md 記録済み）
 
 ---
 
-## 🔴 1.【最重要】Gemini を有償（paid tier）に移行
+## ✅ 1. Gemini のプラン — 無料枠のままで決定（対応不要）
 
-現在のキーは **free tier（20 リクエスト/日）** のため、日常のディクテーション利用（ドッグフーディング）も、S3-T2 のモデル比較（Flash-Lite vs Haiku）も、すぐ quota 切れで止まります。**Phase 1 の品質判定はドッグフーディングが前提なので、これがクリティカルパスです。**
+オーナー決定（2026-07-29）: 有償 tier には移行しない。留意点だけ:
 
-1. ブラウザで **https://aistudio.google.com** → 「Get API key」。
-2. キーに紐づく **Google Cloud プロジェクトで課金（Billing）を有効化**（クレジットカード登録）。
-   - 課金有効プロジェクトのキー ＝ paid tier ＝ **入力内容が学習に使われない**（プライバシー方針の必須条件）。
-3. paid tier になったキー文字列をコピー（既存キーのプロジェクトに課金を付けた場合は再発行不要のこともあります。不明なら新規発行が確実）。
-4. **自分のターミナル.app** で実行（`-U` は上書き更新）:
-
-   ```
-   security add-generic-password -s dev.newt.Koe -a geminiAPIKey -w 'ここにキー' -U
-   ```
-
-5. チャットで「**Gemini を paid tier にした**」と伝える → Claude が疎通確認と golden-set 回帰（S3-T2 のフル A/B）を実行します。
-
-> 費用目安: 従量課金。個人利用なら月数百円程度の想定です。
+- **20 リクエスト/日**。超えた発話は LLM 整形なしの**生テキスト挿入に劣化**します（テキストは失われません）。
+- 無料枠は入力内容が Google の学習に使われる可能性があります（個人ドッグフード段階では許容と決定。外部配布前に再検討）。
+- S3-T2 のフルモデル比較は quota の都合で分割実行 or 見送り。
+- 気が変わったら「paid tier にしたい」と言えば手順を出します。
 
 ---
 
@@ -108,7 +100,7 @@ open Koe.xcodeproj           # Xcode で ▶ Run
 
 ## 🟡 5. Phase 1 exit gate — 2 週間ドッグフーディング
 
-paid tier 移行と QA 通過後、**毎日の実業務（メール・Slack・Claude Code への指示）で実際に使う**のが最終判定です。基準（`docs/plan/04-phase1-m3-experience.md` 末尾）:
+QA 通過後、**毎日の実業務（メール・Slack・Claude Code への指示）で実際に使う**のが最終判定です（無料枠のため 1 日 20 発話まで整形あり、以降は生テキスト挿入）。基準（`docs/plan/04-phase1-m3-experience.md` 末尾）:
 
 - 挿入成功 ≥99%（フォールバック込み）、テキスト消失ゼロ
 - E2E 遅延 P50 ≤1.5s / P95 ≤3.0s（設定「統計」タブで確認可能）

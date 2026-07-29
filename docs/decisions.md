@@ -1,5 +1,9 @@
 # Decision log
 
+## 2026-07-29 (session 14 — owner decision: Gemini stays on the free tier)
+
+- **Owner decided the Gemini key stays on the free tier** (money/accounts → owner's call, logged verbatim). Consequences accepted: (1) 20 requests/day — utterances past the quota degrade to raw-transcript insertion (the designed 429 path; text is never lost, only unformatted); (2) the S3-T2 full A/B (Flash-Lite vs Haiku) and daily golden-harness runs stay quota-bound — run in ≤20-case slices or defer; (3) free-tier inputs may be used for training per Google's terms — owner accepted for personal dogfooding; revisit before any Phase 2 distribution. "Paid tier" removed from the owner critical path in STATUS.md/owner-todo.md.
+
 ## 2026-07-29 (session 14 — ultrareview PR #18 triage)
 
 - **`/code-review ultra 18` (owner-launched) returned 1 finding (nit): `.clipboardHold` had no empty-payload guard and could wipe the user's clipboard.** Verified stale against current `main`: the M10-T1 review follow-up (e9f086d) unified both landings into `clipboardLanding` (App/PasteSimulator.swift), which falls back to raw text when preparation strips everything and never touches the pasteboard for an empty payload — exactly the requested guard. No change needed.

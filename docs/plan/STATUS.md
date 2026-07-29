@@ -8,7 +8,7 @@ Environment resolved: **Xcode 26.6 installed, `gh` authenticated, autonomous PR 
 
 **2026-07-29 — ultrareview 進行中（owner が起動）**: PR #18 → 1 finding (nit)、e9f086d で修正済みと判定（stale、対応不要）。PR #19 → 1 finding (normal) **CONFIRMED**: path-2 watchdog (500ms) が初回 Automation 同意ダイアログを応答前に kill し、経路 2 が新規環境で恒久到達不能 → `fix/m5-t3-automation-consent-watchdog`（`AEDeterminePermissionToAutomateTarget` probe + `AutomationConsent` 純粋判定 + `automationConsentTimeout` 15s、denied は即スキップ; +4 tests, 217 total）。PR #6 は未実施（キャンセルされた）。詳細: decisions.md session 14。
 
-**✅ 2026-07-09 — Actions billing resolved: リポジトリを public 化**（オーナー指示）。private の無料枠（macOS 10 倍消費で実質 200 分/月）を使い切ったのが原因だった。public の標準ランナーは無料。**全オープン PR（#30 metrics / #31 onboarding / #34 revocation(旧#32) / #33 golden set）は CI green でマージ済み — main は 213 テスト green、オープン PR ゼロ。** 残るオーナー対応は Gemini paid tier 移行（現 free tier は 20 req/日で dogfooding 不可）と各 PR の手動 QA、`/code-review ultra`、Phase 1 exit gate。
+**✅ 2026-07-09 — Actions billing resolved: リポジトリを public 化**（オーナー指示）。private の無料枠（macOS 10 倍消費で実質 200 分/月）を使い切ったのが原因だった。public の標準ランナーは無料。**全オープン PR（#30 metrics / #31 onboarding / #34 revocation(旧#32) / #33 golden set）は CI green でマージ済み — main は 213 テスト green、オープン PR ゼロ。** 残るオーナー対応は各 PR の手動 QA、`/code-review ultra`、Phase 1 exit gate。**2026-07-29 — オーナー決定: Gemini は free tier のまま**（20 req/日超は raw-insert 劣化で運用、S3-T2 フル A/B は分割 or 見送り; decisions.md session 14）。**同日、実機での初回起動確認済み — オンボーディング表示・pipeline_ready・consent まで到達**（`open Koe.xcodeproj` は Xcode を開くだけでアプリは起動しない、が原因だった）。
 
 **2026-07-09 — hotfix `fix/ws-ping-double-resume`**: `URLSessionWebSocketChannel.ping()` double-resumed its continuation when the pong raced a socket failure (SIGTRAP crash ~1–3 min after launch, reachable since PR-B's launch prewarm; found by M9-T1 runtime verification). Resume latched via `OSAllocatedUnfairLock`; 4-min soak clean. Details: decisions.md session 13.
 
@@ -34,7 +34,7 @@ Targets: **KoeCore** (pure) + **KoeStorage** (GRDB) + **KoeProviders** (API adap
 | S2-T1 STT harness + utterance set | blocked(owner: STT API keys, voice recordings) | |
 | S2-T2 STT A/B evaluation | todo | Depends S2-T1 |
 | S3-T1 golden set v1 | done(branch) | `feat/s3-golden-set`; `Sources/KoeGolden/Resources/golden-set-v1.json` — **105 ケース**（10 カテゴリ×10 + 複合/長文/過整形防止/injection 耐性 5）。§5.3 の must-NOT-convert（箇条書き化禁止）と慣用漢数字保持を含む。`GoldenCase`/`GoldenSet`/`GoldenChecks`（決定的チェック: 非空/前置き漏れ/要約疑い/必須・禁止部分文字列/辞書表記、単体テスト済み） |
-| S3-T2 regression harness + LLM A/B | harness done(branch) / **run blocked(owner: Gemini paid tier)** | `golden-harness` CLI（`GEMINI_API_KEY=… swift run golden-harness [--category cat] [--limit N]`、exit code で回帰ゲート）。**ライブ検証済みだが現キーは free tier（`free_tier_requests` limit 20）で日次 quota 枯渇** — 初期ケースは実 Gemini で pass を確認、以降は 429→degraded（invariant 2 の挙動どおり）。フル A/B（Flash-Lite vs Haiku）は paid キー到着後。⚠️ **free tier キーは dogfooding も 20 リクエスト/日で止まる — paid tier 移行はディクテーション常用の前提** |
+| S3-T2 regression harness + LLM A/B | harness done(branch) / **full A/B deferred(owner decision: free tier — run in ≤20-case slices)** | `golden-harness` CLI（`GEMINI_API_KEY=… swift run golden-harness [--category cat] [--limit N]`、exit code で回帰ゲート）。**ライブ検証済みだが現キーは free tier（`free_tier_requests` limit 20）で日次 quota 枯渇** — 初期ケースは実 Gemini で pass を確認、以降は 429→degraded（invariant 2 の挙動どおり）。フル A/B（Flash-Lite vs Haiku）は paid キー到着後。⚠️ **free tier キーは dogfooding も 20 リクエスト/日で止まる — paid tier 移行はディクテーション常用の前提** |
 | S4-T1 E2E latency prototype | todo | Depends S1/S2/S3 outcomes |
 
 ## Phase 1 — M0–M3 (`02-phase1-m1-core.md`)
@@ -85,6 +85,6 @@ Owner-facing step-by-step guide (Japanese): **`docs/owner-guide.md`**.
 - [x] Install Xcode (26.6) + `xcode-select`
 - [x] `gh auth login`
 - [x] Bundle ID decided: `dev.newt.Koe`
-- [ ] **[critical path] API keys: Gemini (paid tier) + Speechmatics** → stored in Keychain (`security add-generic-password -s dev.newt.Koe -a geminiAPIKey/speechmaticsAPIKey`). Unblocks M4/M6-T1 and the first vertical slice.
+- [x] API keys: Gemini + Speechmatics → stored in Keychain, validated. **Owner decision 2026-07-29: Gemini stays free tier** (20 req/day; past-quota utterances degrade to raw insert).
 - [ ] Phase 0 A/B keys (later): Deepgram / Soniox / AWS Bedrock (Tokyo)
 - [ ] S2 utterance recordings (~100 clips; script list provided by Claude on request)
