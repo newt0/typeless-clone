@@ -52,10 +52,13 @@ open Koe.xcodeproj           # Xcode で ▶ Run
 | Keychain アクセス許可（初回のキー読み取り時） | **「常に許可」** |
 | 「System Events を制御」（Automation、貼り付け経路2の初回） | 許可 |
 
-**ホットキー設定**: **Caps Lock 押しっぱなしで話す**（2026-07-29 設定済み）。⌥Space / Fn が他ツールと衝突していたため、Caps Lock → F18 の OS リマップ（hidutil + LaunchAgent `dev.newt.koe.capsremap`）+ Koe のホットキー F18 で構成。Koe 側の Fn ホットキーは無効化済み。
+**ホットキー設定**: **Caps Lock 押しっぱなしで話す**（2026-07-29 設定）。⌥Space / Fn が他ツールと衝突していたため、Koe が Caps Lock を直接監視する方式（`CapsLockHIDMonitor`）+ hidutil による caps 状態の抑止で構成。Koe 側の Fn ホットキーは無効化済み。
 
+- **「入力監視」の許可が必要です**（Caps Lock を選んだ場合のみ。設定で OFF なら一切要求しません）。
 - 副作用: **Caps Lock の大文字ロック機能は使えません**（英数/かなキーは無関係）。
-- 戻したいとき: 「Caps Lock のリマップを解除して」と Claude に言えば解除します。
+- 戻したいとき: 「Caps Lock をやめて別のキーにして」と Claude に言えば切り替えます。
+
+> ⚠️ **ローカルビルドは ad-hoc 署名のため、アプリを再ビルドするたびに macOS の許可（アクセシビリティ / 入力監視）が無効化されます。** 再ビルド後に権限エラーが出たら、System 設定で入れ直してください。QA 用の実体は `/Applications/Koe.app` に置いてあります。
 
 **基本動作の確認**: ⌥Space（または Fn）を**押しながら話し、離す** → フォーカス位置に整形済みテキストが挿入されれば成功。結果（OK / ダメだった点）をチャットで返してください。
 

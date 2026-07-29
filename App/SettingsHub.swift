@@ -25,6 +25,9 @@ final class SettingsHub: ObservableObject {
     /// Start/stop the Fn tap live; returns whether the change took effect
     /// (false = Accessibility missing — the toggle reverts).
     var applyFnEnabled: ((Bool) -> Bool)?
+    /// Start/stop the Caps Lock HID monitor live; returns whether the change
+    /// took effect (false = Input Monitoring missing — the toggle reverts).
+    var applyCapsEnabled: ((Bool) -> Bool)?
     /// Set/clear the status item's latched permission ⚠︎ (M11-T2 panel's
     /// all-clear path — mic-caused warnings have no tap-side clearing).
     var setPermissionWarning: ((Bool) -> Void)?

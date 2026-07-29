@@ -6,6 +6,8 @@ Protocol: see `06-autonomous-workflow.md`. Statuses: `todo` / `in-progress` / `p
 
 Environment resolved: **Xcode 26.6 installed, `gh` authenticated, autonomous PR flow proven** (PR #1 merged via CI-green → merge commit). Full test suite runs with `./scripts/test.sh`.
 
+**2026-07-29 — Caps Lock ホットキー追加（`feat/caps-lock-hotkey`）**: owner の ⌥Space/Fn が他ツールと衝突し実機テストが通らなかったため。`hidutil` のリマップはこの機種で**出力を一切出さない**（抑止のみ効く）ことを実測で確認 → リマップ層の下の生 HID レポート（usage 0x07/0x39）を読む `CapsLockHIDMonitor` を実装。純粋判定 `CapsLockArming` + 設定トグル（既定 OFF）。**入力監視 TCC を初採用**（owner 承認の設計逸脱、Caps Lock 有効時のみ要求）。+4 tests (221 total)。ad-hoc 署名のため再ビルドごとに TCC 許可が失効する点も判明 → QA 実体を `/Applications/Koe.app` に設置。詳細: decisions.md session 14。
+
 **2026-07-29 — ultrareview 進行中（owner が起動）**: PR #18 → 1 finding (nit)、e9f086d で修正済みと判定（stale、対応不要）。PR #19 → 1 finding (normal) **CONFIRMED**: path-2 watchdog (500ms) が初回 Automation 同意ダイアログを応答前に kill し、経路 2 が新規環境で恒久到達不能 → `fix/m5-t3-automation-consent-watchdog`（`AEDeterminePermissionToAutomateTarget` probe + `AutomationConsent` 純粋判定 + `automationConsentTimeout` 15s、denied は即スキップ; +4 tests, 217 total）。PR #6 は未実施（キャンセルされた）。詳細: decisions.md session 14。
 
 **✅ 2026-07-09 — Actions billing resolved: リポジトリを public 化**（オーナー指示）。private の無料枠（macOS 10 倍消費で実質 200 分/月）を使い切ったのが原因だった。public の標準ランナーは無料。**全オープン PR（#30 metrics / #31 onboarding / #34 revocation(旧#32) / #33 golden set）は CI green でマージ済み — main は 213 テスト green、オープン PR ゼロ。** 残るオーナー対応は各 PR の手動 QA、`/code-review ultra`、Phase 1 exit gate。**2026-07-29 — オーナー決定: Gemini は free tier のまま**（20 req/日超は raw-insert 劣化で運用、S3-T2 フル A/B は分割 or 見送り; decisions.md session 14）。**同日、実機での初回起動確認済み — オンボーディング表示・pipeline_ready・consent まで到達**（`open Koe.xcodeproj` は Xcode を開くだけでアプリは起動しない、が原因だった）。
