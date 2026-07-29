@@ -41,6 +41,11 @@ enum AppSettings {
         set { defaults.set(newValue, forKey: AppDefaultsKey.fnHotkeyEnabled) }
     }
 
+    static var capsLockHotkeyEnabled: Bool {
+        get { defaults.object(forKey: AppDefaultsKey.capsLockHotkeyEnabled) as? Bool ?? false }
+        set { defaults.set(newValue, forKey: AppDefaultsKey.capsLockHotkeyEnabled) }
+    }
+
     static var privacyConsentedAt: Date? {
         get {
             let value = defaults.double(forKey: AppDefaultsKey.privacyConsentedAt)
