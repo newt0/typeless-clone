@@ -1,5 +1,9 @@
 # Decision log
 
+## 2026-07-29 (session 14 — owner hotkey: Caps Lock via hidutil F18 remap)
+
+- **⌥Space and Fn both collide with the owner's other tools** (the cause of the onboarding step-⑤ test failure — the press never reached Koe). Owner asked for Caps Lock. Implemented machine-locally, no app code: (1) `hidutil` UserKeyMapping Caps Lock (0x700000039) → F18 (0x70000006D), persisted via LaunchAgent `~/Library/LaunchAgents/dev.newt.koe.capsremap.plist` (RunAtLoad); (2) `KeyboardShortcuts_dictation` default set to F18/no-modifiers (carbonKeyCode 79) — the Carbon path registers F-keys without modifiers, hold semantics unchanged; (3) `fnHotkeyEnabled=false` so Koe's tap never fights the owner's Fn tool. Verified live: `alt_hotkey_registered` + `pipeline_ready`. Trade-off accepted: Caps Lock no longer toggles caps globally (JIS 英数/かな unaffected). Revert: `launchctl unload` + delete the plist + `hidutil property --set '{"UserKeyMapping":[]}'`. Candidate M11 follow-up: in-app "Caps Lock" hotkey option that installs/removes this remap itself.
+
 ## 2026-07-29 (session 14 — owner decision: Gemini stays on the free tier)
 
 - **Owner decided the Gemini key stays on the free tier** (money/accounts → owner's call, logged verbatim). Consequences accepted: (1) 20 requests/day — utterances past the quota degrade to raw-transcript insertion (the designed 429 path; text is never lost, only unformatted); (2) the S3-T2 full A/B (Flash-Lite vs Haiku) and daily golden-harness runs stay quota-bound — run in ≤20-case slices or defer; (3) free-tier inputs may be used for training per Google's terms — owner accepted for personal dogfooding; revisit before any Phase 2 distribution. "Paid tier" removed from the owner critical path in STATUS.md/owner-todo.md.
