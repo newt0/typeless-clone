@@ -6,6 +6,8 @@ Protocol: see `06-autonomous-workflow.md`. Statuses: `todo` / `in-progress` / `p
 
 Environment resolved: **Xcode 26.6 installed, `gh` authenticated, autonomous PR flow proven** (PR #1 merged via CI-green → merge commit). Full test suite runs with `./scripts/test.sh`.
 
+**🔴 2026-07-29 — 初の実ディクテーションで 2 件の重大バグ（`fix/e2e-first-dictation-blockers`）**: owner が Caps Lock で初めて実録音に到達し露見。①**音声タップが最初のバッファでクラッシュ（SIGTRAP）** — `@MainActor` の `AudioCaptureEngine` 内で作ったタップクロージャが main actor 隔離を継承し、AVFAudio のリアルタイムスレッドで Swift 6 の executor チェックがトラップ。`@Sendable` 付与で修正、専用ハーネスで実証（修正前 exit 133 / 修正後 exit 0）。**M3-T1 以来の潜在バグ — これまで実音声を1バッファも取れていなかった**。②**metrics 書き込みが全て失敗** — 公開済み `v1_metrics` マイグレーションを直接編集して `isRetry` を追加したため既存 DB に列が作られず。`v2_metrics_isRetry` を追加、旧 v1 形状 DB からの昇格を検証する回帰テスト付き（修正前は 0 行で落ちる）。222 tests green。詳細: decisions.md session 14。
+
 **2026-07-29 — Caps Lock ホットキー追加（`feat/caps-lock-hotkey`）**: owner の ⌥Space/Fn が他ツールと衝突し実機テストが通らなかったため。`hidutil` のリマップはこの機種で**出力を一切出さない**（抑止のみ効く）ことを実測で確認 → リマップ層の下の生 HID レポート（usage 0x07/0x39）を読む `CapsLockHIDMonitor` を実装。純粋判定 `CapsLockArming` + 設定トグル（既定 OFF）。**入力監視 TCC を初採用**（owner 承認の設計逸脱、Caps Lock 有効時のみ要求）。+4 tests (221 total)。ad-hoc 署名のため再ビルドごとに TCC 許可が失効する点も判明 → QA 実体を `/Applications/Koe.app` に設置。詳細: decisions.md session 14。
 
 **2026-07-29 — ultrareview 進行中（owner が起動）**: PR #18 → 1 finding (nit)、e9f086d で修正済みと判定（stale、対応不要）。PR #19 → 1 finding (normal) **CONFIRMED**: path-2 watchdog (500ms) が初回 Automation 同意ダイアログを応答前に kill し、経路 2 が新規環境で恒久到達不能 → `fix/m5-t3-automation-consent-watchdog`（`AEDeterminePermissionToAutomateTarget` probe + `AutomationConsent` 純粋判定 + `automationConsentTimeout` 15s、denied は即スキップ; +4 tests, 217 total）。PR #6 は未実施（キャンセルされた）。詳細: decisions.md session 14。

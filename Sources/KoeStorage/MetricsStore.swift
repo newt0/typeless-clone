@@ -45,6 +45,12 @@ public actor MetricsStore {
         try Self.migrator.migrate(dbQueue)
     }
 
+    /// Migrations are append-only. `v1_metrics` is frozen in the shape it
+    /// shipped in: GRDB records applied identifiers, so editing a published
+    /// migration is a silent no-op on every existing database — `isRetry` was
+    /// once added to `v1_metrics` directly, and every metrics write on an
+    /// already-created DB failed with "no such column" while fresh installs
+    /// (and the in-memory test DBs) looked fine. Add a new migration instead.
     private static var migrator: DatabaseMigrator {
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1_metrics") { db in
@@ -54,7 +60,6 @@ public actor MetricsStore {
                     createdAt TEXT NOT NULL,
                     utterance INTEGER NOT NULL,
                     outcome TEXT NOT NULL,
-                    isRetry INTEGER NOT NULL DEFAULT 0,
                     degraded INTEGER NOT NULL,
                     appBundleID TEXT,
                     promptVersion TEXT NOT NULL,
@@ -66,6 +71,11 @@ public actor MetricsStore {
                 );
                 """)
             try db.execute(sql: "CREATE INDEX idx_metrics_createdAt ON metrics(createdAt);")
+        }
+        migrator.registerMigration("v2_metrics_isRetry") { db in
+            try db.alter(table: "metrics") { table in
+                table.add(column: "isRetry", .integer).notNull().defaults(to: 0)
+            }
         }
         return migrator
     }

@@ -315,7 +315,14 @@ final class AudioCaptureEngine {
         let tapFrames = AVAudioFrameCount(
             format.frameCount(for: KoeConstants.audioChunkDuration, atSampleRate: inputFormat.sampleRate)
         )
-        engine.inputNode.installTap(onBus: 0, bufferSize: tapFrames, format: inputFormat) { buffer, _ in
+        // `@Sendable` is load-bearing, not decoration: without it the closure
+        // inherits this `@MainActor` method's isolation, and AVFAudio invokes
+        // the tap on its realtime messenger queue — so the Swift 6 runtime
+        // executor check (`swift_task_isCurrentExecutor` → `dispatch_assert_queue`)
+        // trapped on the FIRST captured buffer, killing the app (SIGTRAP)
+        // before any audio ever reached STT. `TapState` is `@unchecked
+        // Sendable` precisely so this callback can own it off the main actor.
+        engine.inputNode.installTap(onBus: 0, bufferSize: tapFrames, format: inputFormat) { @Sendable buffer, _ in
             state.process(buffer)
         }
     }

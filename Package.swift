@@ -28,7 +28,9 @@ let package = Package(
                 .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),
-        .testTarget(name: "KoeStorageTests", dependencies: ["KoeStorage"]),
+        // GRDB is a direct test dependency so migration tests can build a
+        // database in an older shipped shape and assert the upgrade path.
+        .testTarget(name: "KoeStorageTests", dependencies: ["KoeStorage", .product(name: "GRDB", package: "GRDB.swift")]),
         // STT/LLM provider adapters (URLSession); no third-party deps.
         .target(name: "KoeProviders", dependencies: ["KoeCore"]),
         .testTarget(name: "KoeProvidersTests", dependencies: ["KoeProviders"]),

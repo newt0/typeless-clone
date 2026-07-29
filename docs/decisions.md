@@ -1,5 +1,13 @@
 # Decision log
 
+## 2026-07-29 (session 14 — first real dictation: two blockers, both invisible to CI)
+
+The owner's first successful hotkey press exposed two bugs that every prior verification missed because it stopped at `pipeline_ready` — no run had ever captured a real audio buffer. Branch `fix/e2e-first-dictation-blockers`.
+
+- **The audio tap crashed the app on its first buffer (SIGTRAP).** `AudioCaptureEngine` is `@MainActor`, so the closure passed to `installTap` inherited main-actor isolation; AVFAudio invokes it on `RealtimeMessenger.mServiceQueue`, and the Swift 6 executor check (`swift_task_isCurrentExecutor` → `dispatch_assert_queue_fail`) trapped. Fix: `{ @Sendable buffer, _ in … }` — a `@Sendable` closure doesn't inherit isolation, which is exactly why `TapState` is `@unchecked Sendable`. **Latent since M3-T1**: the two earlier presses in the same session were too short (2ms/35ms of audio) to fire a single tap callback, which is why they "only" failed instead of crashing. Verified empirically with a standalone harness (`AVAudioPlayerNode` → mixer tap, no mic TCC needed): pre-fix exits 133 (SIGTRAP), post-fix delivers the callback and exits 0. A unit test can't reach this — the trap is a runtime executor check inside a system callback.
+- **Every metrics write failed with "no such column: isRetry".** `isRetry` was added by editing the already-published `v1_metrics` migration (a08387a) instead of appending a new one. GRDB records applied identifiers, so existing databases never got the column — while fresh installs and the in-memory test DBs were unaffected, hiding it from CI completely. Fix: `v1_metrics` restored to its shipped shape + new `v2_metrics_isRetry` (`ALTER TABLE`). Added a regression test that builds a database in the shipped v1 shape (identifier pre-recorded) and asserts a write succeeds — confirmed it fails without the fix (0 rows) and passes with it. **Migrations are append-only; never edit a published one.** GRDB is now a direct `KoeStorageTests` dependency so upgrade paths stay testable.
+- **Not changed: first-press latency.** `audio_recording_started` lagged the press by ~2s on the first press of the session (53ms on later ones) — consistent with the known no-`prepare()` trade-off (session 13). FR-01 (≤200ms) needs a decision once dictation works end-to-end; a post-launch inputNode warm-up is the logged fallback.
+
 ## 2026-07-29 (session 14 — Caps Lock hotkey: raw HID monitor + Input Monitoring)
 
 Owner's ⌥Space and Fn both collide with their other tools (root cause of the failed onboarding step-⑤ test — the press never reached Koe). Owner chose Caps Lock, then chose the Input Monitoring route over a toggle-mode alternative. Branch `feat/caps-lock-hotkey`.
