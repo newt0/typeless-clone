@@ -6,6 +6,8 @@ Protocol: see `06-autonomous-workflow.md`. Statuses: `todo` / `in-progress` / `p
 
 Environment resolved: **Xcode 26.6 installed, `gh` authenticated, autonomous PR flow proven** (PR #1 merged via CI-green → merge commit). Full test suite runs with `./scripts/test.sh`.
 
+**2026-07-29 — ultrareview 進行中（owner が起動）**: PR #18 → 1 finding (nit)、e9f086d で修正済みと判定（stale、対応不要）。PR #19 → 1 finding (normal) **CONFIRMED**: path-2 watchdog (500ms) が初回 Automation 同意ダイアログを応答前に kill し、経路 2 が新規環境で恒久到達不能 → `fix/m5-t3-automation-consent-watchdog`（`AEDeterminePermissionToAutomateTarget` probe + `AutomationConsent` 純粋判定 + `automationConsentTimeout` 15s、denied は即スキップ; +4 tests, 217 total）。PR #6 は未実施（キャンセルされた）。詳細: decisions.md session 14。
+
 **✅ 2026-07-09 — Actions billing resolved: リポジトリを public 化**（オーナー指示）。private の無料枠（macOS 10 倍消費で実質 200 分/月）を使い切ったのが原因だった。public の標準ランナーは無料。**全オープン PR（#30 metrics / #31 onboarding / #34 revocation(旧#32) / #33 golden set）は CI green でマージ済み — main は 213 テスト green、オープン PR ゼロ。** 残るオーナー対応は Gemini paid tier 移行（現 free tier は 20 req/日で dogfooding 不可）と各 PR の手動 QA、`/code-review ultra`、Phase 1 exit gate。
 
 **2026-07-09 — hotfix `fix/ws-ping-double-resume`**: `URLSessionWebSocketChannel.ping()` double-resumed its continuation when the pong raced a socket failure (SIGTRAP crash ~1–3 min after launch, reachable since PR-B's launch prewarm; found by M9-T1 runtime verification). Resume latched via `OSAllocatedUnfairLock`; 4-min soak clean. Details: decisions.md session 13.

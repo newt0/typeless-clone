@@ -90,6 +90,12 @@ public enum KoeConstants {
     public static let llmTotalTimeout: Duration = .seconds(6)
     /// Per insertion stage; exceeding advances to the next fallback path.
     public static let insertionStageTimeout: Duration = .milliseconds(500)
+    /// Path-2 watchdog while the Automation TCC decision is undetermined:
+    /// the run blocks on the consent dialog and the user needs human time to
+    /// answer it (killing the process dismisses the dialog with no decision
+    /// recorded). Also covers a System Events cold launch. One-time cost;
+    /// recorded decisions fall back to `insertionStageTimeout`. [tune]
+    public static let automationConsentTimeout: Duration = .seconds(15)
 
     // MARK: HUD (Design §7.5) — [tune at owner QA]
 

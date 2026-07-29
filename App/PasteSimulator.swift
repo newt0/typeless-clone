@@ -367,18 +367,31 @@ final class PasteSimulator: TextInserting {
     }
 
     /// Path 2: deliver Cmd+V via `System Events` AppleScript (Design §6.2). Run
-    /// through `osascript` so the call is cancellable and bounded by the stage
-    /// timeout — a hung/blocked run is terminated and reported as a failure so
-    /// the chain advances. Returns whether the script exited cleanly (exit 0).
+    /// through `osascript` so the call is cancellable and bounded by a watchdog —
+    /// a hung run is terminated and reported as a failure so the chain advances.
+    /// The budget depends on the recorded Automation TCC state (``AutomationConsent``):
+    /// undetermined runs block on the consent dialog and get human-scale time
+    /// (killing the process would dismiss the dialog with no decision recorded,
+    /// leaving path 2 permanently unreachable); denied skips the run outright.
+    /// Returns whether the script exited cleanly (exit 0).
     private func runAppleScriptPaste() async -> Bool {
+        let permission = automationPermissionState()
+        guard let budget = AutomationConsent.watchdogBudget(for: permission) else {
+            Log.event("paste_applescript_denied_skip", category: .insertion)
+            return false
+        }
+        if permission == .undetermined {
+            Log.event("paste_applescript_consent_wait", category: .insertion)
+        }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", "tell application \"System Events\" to keystroke \"v\" using command down"]
 
-        // Terminate if the run overruns the per-stage timeout (e.g. a blocked
-        // Automation-permission prompt); same-actor capture of `process`.
+        // Terminate a genuinely hung run past its budget; same-actor capture
+        // of `process`.
         let watchdog = Task { @MainActor in
-            try? await Task.sleep(for: KoeConstants.insertionStageTimeout)
+            try? await Task.sleep(for: budget)
             if process.isRunning {
                 Log.error("paste_applescript_timeout", category: .insertion)
                 process.terminate()
@@ -405,6 +418,29 @@ final class PasteSimulator: TextInserting {
         let ok = process.terminationStatus == 0
         if !ok { Log.event("paste_applescript_failed", category: .insertion, code: Int(process.terminationStatus)) }
         return ok
+    }
+
+    /// Reads the recorded Automation (AppleEvents → System Events) TCC state
+    /// without prompting (`askUserIfNeeded: false`). Undetermined also covers
+    /// "System Events not running" (cold launch) and probe failures — states
+    /// where the run itself needs the generous budget, never a skip.
+    private func automationPermissionState() -> AutomationPermissionState {
+        let bundleID = "com.apple.systemevents"
+        var target = AEAddressDesc()
+        let created = bundleID.withCString { cString in
+            AECreateDesc(typeApplicationBundleID, cString, strlen(cString), &target)
+        }
+        guard created == noErr else { return .undetermined }
+        defer { AEDisposeDesc(&target) }
+
+        switch AEDeterminePermissionToAutomateTarget(&target, typeWildCard, typeWildCard, false) {
+        case noErr:
+            return .granted
+        case OSStatus(errAEEventNotPermitted):
+            return .denied
+        default: // errAEEventWouldRequireUserConsent (-1744), procNotFound, …
+            return .undetermined
+        }
     }
 
     // MARK: Verification

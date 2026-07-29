@@ -4,6 +4,13 @@
 
 - **`/code-review ultra 18` (owner-launched) returned 1 finding (nit): `.clipboardHold` had no empty-payload guard and could wipe the user's clipboard.** Verified stale against current `main`: the M10-T1 review follow-up (e9f086d) unified both landings into `clipboardLanding` (App/PasteSimulator.swift), which falls back to raw text when preparation strips everything and never touches the pasteboard for an empty payload — exactly the requested guard. No change needed.
 
+## 2026-07-29 (session 14 — ultrareview PR #19 fix: Automation consent watchdog)
+
+- **`/code-review ultra 19` returned 1 finding (normal), CONFIRMED on `main`: the path-2 watchdog (`insertionStageTimeout` 500ms) terminated `osascript` before a human could answer the first-run Automation TCC dialog.** Killing the requester dismisses the dialog *without recording a decision*, so every attempt re-trapped — path 2 was structurally unreachable on a fresh install (no other code path triggers the Automation prompt; M11-T1 onboarding covers mic/AX only, and its test-insert lands via path 1). Branch `fix/m5-t3-automation-consent-watchdog`.
+- **Fix reads the truth from the OS instead of a shadow first-run flag**: `AEDeterminePermissionToAutomateTarget` (askUserIfNeeded=false) probe in `PasteSimulator` → pure `AutomationConsent.watchdogBudget` (KoeCore): granted → 500ms as before; undetermined → new `automationConsentTimeout` 15s [tune] (covers the consent dialog AND a System Events cold launch — a second latent >500ms trap — plus `procNotFound`/probe-failure); denied → skip path 2 outright (saves the wasted stage timeout; re-granting in System Settings is picked up by the next probe). A persisted flag would go stale on `tccutil reset`/macOS updates; the probe cannot.
+- Ignoring the dialog past 15s dismisses it undecided → the next attempt re-prompts with a fresh budget; the insertion FIFO is bounded either way. +4 tests (217 total).
+- **Deferred (logged, not done): an onboarding pre-arm step for the Automation prompt** — would move the first dialog out of the insertion path entirely; all onboarding steps are skippable so the in-path budget fix is required regardless. Candidate for an M11 follow-up.
+
 ## 2026-07-09 (session 13 — E2E wiring PR-A: streaming seams)
 
 Owner directive: work through the remaining STATUS.md tasks autonomously (/loop). First unblocked task: the STT+format+paste end-to-end wiring, split into PR-A (KoeCore/Providers seams, CI-verifiable) and PR-B (App composition root, owner-QA-gated).
