@@ -1,5 +1,9 @@
 # Decision log
 
+## 2026-07-29 (session 14 — ultrareview PR #18 triage)
+
+- **`/code-review ultra 18` (owner-launched) returned 1 finding (nit): `.clipboardHold` had no empty-payload guard and could wipe the user's clipboard.** Verified stale against current `main`: the M10-T1 review follow-up (e9f086d) unified both landings into `clipboardLanding` (App/PasteSimulator.swift), which falls back to raw text when preparation strips everything and never touches the pasteboard for an empty payload — exactly the requested guard. No change needed.
+
 ## 2026-07-09 (session 13 — E2E wiring PR-A: streaming seams)
 
 Owner directive: work through the remaining STATUS.md tasks autonomously (/loop). First unblocked task: the STT+format+paste end-to-end wiring, split into PR-A (KoeCore/Providers seams, CI-verifiable) and PR-B (App composition root, owner-QA-gated).
