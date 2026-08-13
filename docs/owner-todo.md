@@ -54,6 +54,8 @@ open Koe.xcodeproj           # Xcode で ▶ Run
 
 **ホットキー設定**: **Caps Lock 押しっぱなしで話す**（2026-07-29 設定）。⌥Space / Fn が他ツールと衝突していたため、Koe が Caps Lock を直接監視する方式（`CapsLockHIDMonitor`）+ hidutil による caps 状態の抑止で構成。Koe 側の Fn ホットキーは無効化済み。
 
+> 🛑 **2026-08-13: オーナー機からアンインストール済み。** Caps Lock を他用途に使うため、この設定は現在**適用されていません**。撤去したもの: 常駐プロセス / hidutil の caps→F18 リマップ / LaunchAgent `dev.newt.koe.capsremap` / DerivedData のビルド成果物 / `~/Library/Application Support/dev.newt.Koe`（履歴・辞書・メトリクス DB）/ `~/Library/Caches/dev.newt.Koe` / defaults ドメイン `dev.newt.Koe`。Keychain の `geminiAPIKey`（service `dev.newt.Koe`）のみ保持。<br>実機 QA を再開するときは、再ビルド → 権限（入力監視・アクセシビリティ・マイク）の再付与 → ホットキーの再設定が必要です。Caps Lock 方式に戻す場合のみ、上記の hidutil リマップを `RunAtLoad` の LaunchAgent として再作成してください（`Src: 30064771129` → `Dst: 30064771181`）。なお、システム設定のプライバシー一覧に Koe のエントリが残っていたら手動で削除してください（アプリ実体が無いため権限は行使されません）。
+
 - **「入力監視」の許可が必要です**（Caps Lock を選んだ場合のみ。設定で OFF なら一切要求しません）。
 - 副作用: **Caps Lock の大文字ロック機能は使えません**（英数/かなキーは無関係）。
 - 戻したいとき: 「Caps Lock をやめて別のキーにして」と Claude に言えば切り替えます。
